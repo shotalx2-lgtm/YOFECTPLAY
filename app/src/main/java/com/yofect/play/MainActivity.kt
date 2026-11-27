@@ -48,6 +48,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.text.Normalizer
+import java.util.Locale
+import kotlin.math.abs
 
 private data class UiPalette(
     val background: Color,
@@ -90,7 +93,10 @@ private data class Work(
     val year: String,
     val language: String,
     val mediaType: String,
-    val rating: Double
+    val rating: Double,
+    val source: String = "TMDB",
+    val externalUrl: String? = null,
+    val sourceLicense: String = ""
 )
 private data class Catalog(
     val trending: List<Work> = emptyList(),
@@ -99,14 +105,50 @@ private data class Catalog(
     val arabic: List<Work> = emptyList(),
     val turkish: List<Work> = emptyList(),
     val indian: List<Work> = emptyList(),
-    val international: List<Work> = emptyList()
+    val international: List<Work> = emptyList(),
+    val openShows: List<Work> = emptyList(),
+    val publicDomain: List<Work> = emptyList(),
+    val openVideos: List<Work> = emptyList()
 )
-private data class Season(val number: Int, val name: String, val episodes: Int)
+private data class Season(val number: Int, val name: String, val episodes: Int, val sourceId: Int = 0)
 private data class Episode(val number: Int, val name: String, val overview: String, val still: String?)
 private data class WatchProvider(val name: String, val logo: String?, val link: String)
 private data class WorkDetails(val overview: String, val genres: List<String>, val runtime: String, val seasons: List<Season>, val providers: List<WatchProvider>, val providerLink: String)
 
-private fun favoriteKey(work: Work) = work.mediaType + ":" + work.id
+private fun favoriteKey(work: Work) = work.mediaType + ":" + work.source + ":" + work.id
+
+private fun normalizedTitle(value: String): String {
+    val plain = Normalizer.normalize(value.lowercase(Locale.ROOT), Normalizer.Form.NFD)
+        .replace("\\p{Mn}+".toRegex(), "")
+    return plain.replace("[^\\p{L}\\p{N}]".toRegex(), "")
+}
+
+private fun identityKey(work: Work): String {
+    val title = normalizedTitle(work.title)
+    return if (title.isBlank()) favoriteKey(work)
+    else work.mediaType + ":" + title + ":" + work.year.take(4)
+}
+
+private fun sourcePriority(work: Work): Int = when (work.source) {
+    "TMDB" -> 4
+    "TVmaze" -> 3
+    "Internet Archive" -> 2
+    "Wikimedia Commons" -> 1
+    else -> 0
+}
+
+private fun dedupeWorks(items: List<Work>): List<Work> {
+    val map = LinkedHashMap<String, Work>()
+    items.filter { it.title.isNotBlank() && it.id != 0 }.forEach { work ->
+        val key = identityKey(work)
+        val old = map[key]
+        if (old == null || sourcePriority(work) > sourcePriority(old) ||
+            (old.poster.isNullOrBlank() && !work.poster.isNullOrBlank()) ||
+            (old.overview.isBlank() && work.overview.isNotBlank())
+        ) map[key] = work
+    }
+    return map.values.toList()
+}
 private fun getApiKey(context: Context): String {
     val local = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("tmdb_key", "").orEmpty()
     return local.ifBlank { BuildConfig.TMDB_API_KEY }
@@ -170,6 +212,9 @@ private suspend fun apiWorksPages(context: Context, path: String, fallback: Stri
 }
 
 private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
+    val openShows = async { loadTvMazeShows() }
+    val publicDomain = async { loadInternetArchive("", 20) }
+    val openVideos = async { loadCommonsVideos("", 16) }
     val trending = async { apiWorksPages(context, "trending/all/week") }
     val movies = async { apiWorksPages(context, "movie/popular", "movie") }
     val shows = async { apiWorksPages(context, "tv/popular", "tv") }
@@ -181,18 +226,228 @@ private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
     val inShows = async { apiWorks(context, "discover/tv?with_original_language=hi&sort_by=popularity.desc", "tv") }
     val enMovies = async { apiWorksPages(context, "discover/movie?without_original_language=ar,tr,hi,ta,te,ml,kn,bn,mr&sort_by=popularity.desc", "movie") }
     val enShows = async { apiWorks(context, "discover/tv?with_original_language=en&sort_by=popularity.desc", "tv") }
+    val noKeyShows = openShows.await()
+    val archiveItems = publicDomain.await()
+    val commonsItems = openVideos.await()
     Catalog(
-        trending = trending.await(),
-        movies = movies.await(),
-        shows = shows.await(),
-        arabic = (arMovies.await() + arShows.await()).distinctBy { favoriteKey(it) },
-        turkish = (trMovies.await() + trShows.await()).distinctBy { favoriteKey(it) },
-        indian = (inMovies.await() + inShows.await()).distinctBy { favoriteKey(it) },
-        international = (enMovies.await() + enShows.await()).distinctBy { favoriteKey(it) }
+        trending = dedupeWorks(trending.await() + noKeyShows.take(8) + archiveItems.take(6)),
+        movies = dedupeWorks(movies.await()),
+        shows = dedupeWorks(shows.await() + noKeyShows),
+        arabic = dedupeWorks(arMovies.await() + arShows.await() + noKeyShows.filter { it.language == "AR" }),
+        turkish = dedupeWorks(trMovies.await() + trShows.await() + noKeyShows.filter { it.language == "TR" }),
+        indian = dedupeWorks(inMovies.await() + inShows.await() + noKeyShows.filter { it.language == "HI" }),
+        international = dedupeWorks(enMovies.await() + enShows.await() + noKeyShows.filter { it.language !in listOf("AR", "TR", "HI") }),
+        openShows = dedupeWorks(noKeyShows),
+        publicDomain = archiveItems,
+        openVideos = commonsItems
+    )
+}
+
+
+private suspend fun publicJsonObject(url: String): JSONObject? = withContext(Dispatchers.IO) {
+    var connection: HttpURLConnection? = null
+    try {
+        connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = 12000
+        connection.readTimeout = 15000
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("User-Agent", "YOFECT-PLAY/0.3 (Android; public metadata clients)")
+        connection.setRequestProperty("Accept", "application/json")
+        if (connection.responseCode !in 200..299) return@withContext null
+        JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+    } catch (_: Exception) {
+        null
+    } finally {
+        connection?.disconnect()
+    }
+}
+
+private suspend fun publicJsonArray(url: String): JSONArray? = withContext(Dispatchers.IO) {
+    var connection: HttpURLConnection? = null
+    try {
+        connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = 12000
+        connection.readTimeout = 15000
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("User-Agent", "YOFECT-PLAY/0.3 (Android; public metadata clients)")
+        connection.setRequestProperty("Accept", "application/json")
+        if (connection.responseCode !in 200..299) return@withContext null
+        JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+    } catch (_: Exception) {
+        null
+    } finally {
+        connection?.disconnect()
+    }
+}
+
+private fun cleanHtml(value: String): String =
+    value.replace("<[^>]*>".toRegex(), " ").replace("&nbsp;", " ")
+        .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\\"")
+        .replace("\\\\s+".toRegex(), " ").trim()
+
+private fun parseTvMazeShow(show: JSONObject): Work? {
+    val id = show.optInt("id")
+    if (id <= 0) return null
+    val image = show.optJSONObject("image")
+    val imageUrl = image?.optString("original").orEmpty().ifBlank { image?.optString("medium").orEmpty() }
+    val languageName = show.optString("language")
+    val languageCode = when (languageName.lowercase(Locale.ROOT)) {
+        "arabic" -> "AR"
+        "turkish" -> "TR"
+        "hindi" -> "HI"
+        else -> languageName.take(2).uppercase(Locale.ROOT)
+    }
+    val summary = cleanHtml(show.optString("summary"))
+    val year = show.optString("premiered").take(4).ifBlank { show.optString("ended").take(4) }
+    val url = show.optString("url").ifBlank { "https://www.tvmaze.com/shows/" + id }
+    return Work(
+        id = -abs(id),
+        title = show.optString("name").ifBlank { "مسلسل بدون عنوان" },
+        overview = summary,
+        poster = imageUrl.ifBlank { null },
+        backdrop = imageUrl.ifBlank { null },
+        year = year,
+        language = languageCode,
+        mediaType = "tv",
+        rating = show.optJSONObject("rating")?.optDouble("average", 0.0) ?: 0.0,
+        source = "TVmaze",
+        externalUrl = url,
+        sourceLicense = "TVmaze (CC BY-SA)"
+    )
+}
+
+private suspend fun loadTvMazeShows(): List<Work> = coroutineScope {
+    val pages = listOf(0, 10, 20, 30).map { page ->
+        async { publicJsonArray("https://api.tvmaze.com/shows?page=" + page) ?: JSONArray() }
+    }
+    val result = mutableListOf<Work>()
+    pages.forEach { deferred ->
+        val rows = deferred.await()
+        for (index in 0 until rows.length()) {
+            val work = runCatching { parseTvMazeShow(rows.getJSONObject(index)) }.getOrNull()
+            if (work != null) result.add(work)
+        }
+    }
+    dedupeWorks(result).sortedByDescending { it.rating }.take(100)
+}
+
+private suspend fun searchTvMaze(query: String): List<Work> {
+    val url = "https://api.tvmaze.com/search/shows?q=" + URLEncoder.encode(query, "UTF-8")
+    val rows = publicJsonArray(url) ?: return emptyList()
+    return (0 until rows.length()).mapNotNull { index ->
+        runCatching { parseTvMazeShow(rows.optJSONObject(index)?.optJSONObject("show") ?: JSONObject()) }.getOrNull()
+    }
+}
+
+private suspend fun loadInternetArchive(query: String = "", limit: Int = 18): List<Work> {
+    val rights = "(licenseurl:http*publicdomain* OR licenseurl:http*zero/1.0* OR licenseurl:http*by/4.0* OR licenseurl:http*by-sa/4.0*)"
+    val q = if (query.isBlank()) "mediatype:movies AND " + rights else
+        "mediatype:movies AND title:(" + query.replace("\\\\", " ").replace("\\"", " ") + ") AND " + rights
+    val url = "https://archive.org/advancedsearch.php?q=" + URLEncoder.encode(q, "UTF-8") +
+        "&fl[]=identifier&fl[]=title&fl[]=year&fl[]=description&fl[]=licenseurl" +
+        "&sort[]=downloads%20desc&rows=" + limit + "&page=1&output=json"
+    val docs = publicJsonObject(url)?.optJSONObject("response")?.optJSONArray("docs") ?: JSONArray()
+    val results = mutableListOf<Work>()
+    for (index in 0 until docs.length()) {
+        val item = docs.optJSONObject(index) ?: continue
+        val identifier = item.optString("identifier")
+        val title = item.optString("title")
+        val license = item.optString("licenseurl")
+        val permitted = license.contains("publicdomain", true) || license.contains("zero/1.0", true) ||
+            license.contains("by/4.0", true) || license.contains("by-sa/4.0", true)
+        if (identifier.isBlank() || title.isBlank() || !permitted) continue
+        val id = -((identifier.hashCode() and 0x7fffffff).coerceAtLeast(1))
+        results.add(
+            Work(
+                id = id, title = title, overview = cleanHtml(item.optString("description")),
+                poster = "https://archive.org/services/img/" + identifier,
+                backdrop = "https://archive.org/services/img/" + identifier,
+                year = item.optString("year").take(4), language = "—", mediaType = "movie",
+                rating = 0.0, source = "Internet Archive",
+                externalUrl = "https://archive.org/details/" + identifier,
+                sourceLicense = license
+            )
+        )
+    }
+    return dedupeWorks(results)
+}
+
+private fun allowedCommonsLicense(label: String): Boolean {
+    val value = label.trim().lowercase(Locale.ROOT)
+    return value.contains("public domain") || value.contains("cc0") ||
+        value.startsWith("cc by ") || value.startsWith("cc by-sa") ||
+        value.startsWith("cc attribution") || value.startsWith("cc attribution-sharealike")
+}
+
+private suspend fun loadCommonsVideos(query: String = "", limit: Int = 16): List<Work> {
+    val search = (if (query.isBlank()) "" else query + " ") + "filetype:video"
+    val url = "https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search" +
+        "&gsrsearch=" + URLEncoder.encode(search, "UTF-8") +
+        "&gsrnamespace=6&gsrlimit=" + limit + "&prop=imageinfo&iiprop=url%7Cextmetadata&iiurlwidth=500"
+    val pages = publicJsonObject(url)?.optJSONObject("query")?.optJSONObject("pages") ?: JSONObject()
+    val keys = pages.keys()
+    val results = mutableListOf<Work>()
+    while (keys.hasNext()) {
+        val page = pages.optJSONObject(keys.next()) ?: continue
+        val info = page.optJSONArray("imageinfo")?.optJSONObject(0) ?: continue
+        val metadata = info.optJSONObject("extmetadata") ?: JSONObject()
+        val license = cleanHtml(metadata.optJSONObject("LicenseShortName")?.optString("value").orEmpty())
+        if (!allowedCommonsLicense(license)) continue
+        val fileName = page.optString("title").removePrefix("File:")
+        val title = fileName.substringBeforeLast(".").replace("_", " ").trim()
+        val thumb = info.optString("thumburl").ifBlank { info.optString("url") }
+        val description = cleanHtml(metadata.optJSONObject("ImageDescription")?.optString("value").orEmpty())
+        val pageUrl = "https://commons.wikimedia.org/wiki/" +
+            URLEncoder.encode("File:" + fileName, "UTF-8").replace("+", "_")
+        val id = -((fileName.hashCode() and 0x7fffffff).coerceAtLeast(1))
+        if (title.isNotBlank() && thumb.isNotBlank()) {
+            results.add(
+                Work(
+                    id = id, title = title, overview = description,
+                    poster = thumb, backdrop = thumb, year = "", language = "—",
+                    mediaType = "movie", rating = 0.0, source = "Wikimedia Commons",
+                    externalUrl = pageUrl, sourceLicense = license
+                )
+            )
+        }
+    }
+    return dedupeWorks(results)
+}
+
+private suspend fun searchPublicSources(query: String): List<Work> = coroutineScope {
+    val tv = async { searchTvMaze(query) }
+    val archive = async { loadInternetArchive(query, 8) }
+    val commons = async { loadCommonsVideos(query, 8) }
+    dedupeWorks(tv.await() + archive.await() + commons.await())
+}
+
+private suspend fun loadTvMazeDetails(work: Work): WorkDetails {
+    val showId = abs(work.id)
+    val show = publicJsonObject("https://api.tvmaze.com/shows/" + showId) ?: JSONObject()
+    val genres = show.optJSONArray("genres") ?: JSONArray()
+    val genreNames = (0 until genres.length()).map { genres.optString(it) }.filter { it.isNotBlank() }
+    val seasonsJson = publicJsonArray("https://api.tvmaze.com/shows/" + showId + "/seasons") ?: JSONArray()
+    val seasons = (0 until seasonsJson.length()).mapNotNull { index ->
+        val season = seasonsJson.optJSONObject(index) ?: return@mapNotNull null
+        val number = season.optInt("number")
+        val sourceId = season.optInt("id")
+        if (number <= 0 || sourceId <= 0) null
+        else Season(number, season.optString("name").ifBlank { "الموسم " + number },
+            season.optInt("episodeOrder"), sourceId)
+    }
+    val runtimeValue = show.optInt("averageRuntime")
+    val runtime = if (runtimeValue > 0) "$runtimeValue دقيقة للحلقة" else "غير محدد"
+    return WorkDetails(
+        cleanHtml(show.optString("summary")).ifBlank { work.overview },
+        genreNames, runtime, seasons, emptyList(), work.externalUrl.orEmpty()
     )
 }
 
 private suspend fun loadDetails(context: Context, work: Work): WorkDetails? {
+    if (work.source == "TVmaze") return loadTvMazeDetails(work)
+    if (work.source != "TMDB") {
+        return WorkDetails(work.overview, emptyList(), "غير متاح من هذا المصدر", emptyList(), emptyList(), work.externalUrl.orEmpty())
+    }
     val path = if (work.mediaType == "tv") "tv/" + work.id else "movie/" + work.id
     val json = apiJson(context, path) ?: return null
     val genresArray = json.optJSONArray("genres") ?: JSONArray()
@@ -230,6 +485,19 @@ private suspend fun loadDetails(context: Context, work: Work): WorkDetails? {
 }
 
 private suspend fun loadEpisodes(context: Context, work: Work, season: Season): List<Episode> {
+    if (work.source == "TVmaze") {
+        if (season.sourceId <= 0) return emptyList()
+        val publicRows = publicJsonArray("https://api.tvmaze.com/seasons/" + season.sourceId + "/episodes") ?: return emptyList()
+        return (0 until publicRows.length()).mapNotNull { index ->
+            publicRows.optJSONObject(index)?.let { item ->
+                val image = item.optJSONObject("image")
+                val still = image?.optString("medium").orEmpty().ifBlank { image?.optString("original").orEmpty() }
+                val number = item.optInt("number")
+                Episode(number, item.optString("name").ifBlank { "الحلقة " + number },
+                    cleanHtml(item.optString("summary")), still.ifBlank { null })
+            }
+        }
+    }
     val rows = apiJson(context, "tv/" + work.id + "/season/" + season.number)?.optJSONArray("episodes") ?: return emptyList()
     return (0 until rows.length()).mapNotNull { index ->
         rows.optJSONObject(index)?.let { item ->
@@ -274,10 +542,10 @@ private fun YofectPlayApp() {
         val loaded = runCatching { loadCatalog(context) }
         catalog = loaded.getOrDefault(Catalog())
         loading = false
-        if (getApiKey(context).isBlank()) {
-            error = "فعّل مكتبة YOFECT PLAY بإضافة مفتاح TMDB من الإعدادات."
-        } else if (loaded.isFailure || catalog.trending.isEmpty()) {
-            error = "تعذر تحميل المكتبة. راجع مفتاح TMDB واتصال الإنترنت ثم حاول مرة أخرى."
+        if (loaded.isFailure || (catalog.trending + catalog.openShows + catalog.publicDomain + catalog.openVideos).isEmpty()) {
+            error = "تعذر الاتصال بالمصادر الآن. تحقق من الإنترنت ثم حاول التحديث."
+        } else if (getApiKey(context).isBlank()) {
+            error = "المصادر المجانية تعمل بدون مفتاح. أضف TMDB اختياريًا لتوسيع بيانات الأفلام والصور."
         }
     }
 
@@ -298,9 +566,12 @@ private fun YofectPlayApp() {
             delay(450)
             searchBusy = true
             searchStarted = true
-            val rows = apiWorks(context, "search/multi?query=" + URLEncoder.encode(query.trim(), "UTF-8"))
-            searchResults = rows.filter { it.mediaType == "movie" || it.mediaType == "tv" }
-                .distinctBy { favoriteKey(it) }
+            val rows = coroutineScope {
+                val tmdb = async { apiWorks(context, "search/multi?query=" + URLEncoder.encode(query.trim(), "UTF-8")) }
+                val open = async { searchPublicSources(query.trim()) }
+                dedupeWorks(tmdb.await().filter { it.mediaType == "movie" || it.mediaType == "tv" } + open.await())
+            }
+            searchResults = rows
             searchBusy = false
         }
     }
@@ -532,8 +803,8 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
         "تركي" -> catalog.turkish
         "هندي" -> catalog.indian
         "أجنبي" -> catalog.international
-        else -> catalog.trending + catalog.movies + catalog.shows
-    }.distinctBy { favoriteKey(it) }
+        else -> catalog.trending + catalog.movies + catalog.shows + catalog.openShows + catalog.publicDomain + catalog.openVideos
+    }.let { dedupeWorks(it) }
     val filtered = when (media) {
         "أفلام" -> source.filter { it.mediaType == "movie" }
         "مسلسلات" -> source.filter { it.mediaType == "tv" }
@@ -569,9 +840,12 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
         if (loading) item { LoadingBlock() }
         if (error.isNotBlank()) item { NoticeCard(error) }
         if (region == "الكل") {
-            if (catalog.trending.isNotEmpty()) item { PosterSection("الأكثر رواجًا الآن", catalog.trending, onOpen) }
-            if (catalog.movies.isNotEmpty()) item { PosterSection("أفلام شائعة", catalog.movies, onOpen) }
-            if (catalog.shows.isNotEmpty()) item { PosterSection("مسلسلات شائعة", catalog.shows, onOpen) }
+            if (catalog.trending.isNotEmpty()) item { PosterSection("مختارات لك", dedupeWorks(catalog.trending), onOpen) }
+            if (catalog.movies.isNotEmpty()) item { PosterSection("أفلام شائعة", dedupeWorks(catalog.movies), onOpen) }
+            if (catalog.shows.isNotEmpty()) item { PosterSection("مسلسلات شائعة", dedupeWorks(catalog.shows), onOpen) }
+            if (catalog.openShows.isNotEmpty()) item { PosterSection("مسلسلات من TVmaze • بدون مفتاح", catalog.openShows, onOpen) }
+            if (catalog.publicDomain.isNotEmpty()) item { PosterSection("أفلام بترخيص ملكية عامة", catalog.publicDomain, onOpen) }
+            if (catalog.openVideos.isNotEmpty()) item { PosterSection("فيديوهات بتراخيص مفتوحة", catalog.openVideos, onOpen) }
         }
         if (filtered.isNotEmpty()) {
             val heading = when (region) {
@@ -583,10 +857,10 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
             }
             item { PosterSection(heading, filtered, onOpen) }
         } else if (!loading && region != "الكل") {
-            item { NoticeCard("لا توجد نتائج في هذا التصنيف حاليًا. تأكد من إعداد مفتاح TMDB ثم حدّث المكتبة.") }
+            item { NoticeCard("لا توجد نتائج في هذا التصنيف حاليًا. جرّب تحديث المصادر أو البحث باسم العمل.") }
         }
         item {
-            Text("هذه مكتبة بيانات وصور ومواسم. تشغيل الفيديو يتطلب مصدرًا مرخصًا متاحًا لكل عمل.", color = muted(), fontSize = 10.sp, modifier = Modifier.padding(horizontal = 18.dp))
+            Text("TVmaze وInternet Archive وWikimedia Commons تعمل دون مفتاح. لا نعرض إلا روابط المصدر والترخيص المتاح؛ تشغيل المحتوى محكوم بحقوق كل عمل.", color = muted(), fontSize = 10.sp, modifier = Modifier.padding(horizontal = 18.dp))
         }
     }
 }
@@ -687,7 +961,7 @@ private fun WorkListRow(work: Work, onOpen: (Work) -> Unit) {
 
 @Composable
 private fun LibraryScreen(catalog: Catalog, favorites: Set<String>, onOpen: (Work) -> Unit) {
-    val all = (catalog.trending + catalog.movies + catalog.shows + catalog.arabic + catalog.turkish + catalog.indian + catalog.international).distinctBy { favoriteKey(it) }
+    val all = dedupeWorks(catalog.trending + catalog.movies + catalog.shows + catalog.arabic + catalog.turkish + catalog.indian + catalog.international + catalog.openShows + catalog.publicDomain + catalog.openVideos)
     val saved = all.filter { favorites.contains(favoriteKey(it)) }
     Column(Modifier.fillMaxSize()) {
         Text("قائمتي", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(20.dp))
@@ -706,13 +980,13 @@ private fun LibraryScreen(catalog: Catalog, favorites: Set<String>, onOpen: (Wor
 @Composable
 private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFavorite: () -> Unit) {
     val context = LocalContext.current
-    var details by remember(work.id, work.mediaType) { mutableStateOf<WorkDetails?>(null) }
-    var loading by remember(work.id, work.mediaType) { mutableStateOf(true) }
+    var details by remember(work.id, work.mediaType, work.source) { mutableStateOf<WorkDetails?>(null) }
+    var loading by remember(work.id, work.mediaType, work.source) { mutableStateOf(true) }
     var selectedSeason by remember(work.id, work.mediaType) { mutableStateOf<Season?>(null) }
     var episodes by remember(work.id, work.mediaType) { mutableStateOf<List<Episode>>(emptyList()) }
     var episodesLoading by remember { mutableStateOf(false) }
 
-    LaunchedEffect(work.id, work.mediaType) {
+    LaunchedEffect(work.id, work.mediaType, work.source) {
         details = loadDetails(context, work)
         loading = false
     }
@@ -742,6 +1016,7 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
         item {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(details?.overview ?: work.overview.ifBlank { "لا يتوفر ملخص لهذا العمل." }, color = Color.LightGray, fontSize = 13.sp, lineHeight = 21.sp)
+                Text("مصدر البيانات: ${work.source}", color = Accent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 if (details != null) {
                     Text("النوع: " + details!!.genres.joinToString(" • ").ifBlank { "غير محدد" }, color = muted(), fontSize = 11.sp)
                     Text("المدة: " + details!!.runtime, color = muted(), fontSize = 11.sp)
@@ -763,12 +1038,21 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
                         Text("فتح خيارات المشاهدة")
                     }
                 } else {
-                    Button(onClick = { openWhereToWatch(context, work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
-                        Icon(Icons.Default.PlayArrow, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("ابحث عن منصة مشاهدة رسمية")
+                    if (work.source != "TMDB" && !work.externalUrl.isNullOrBlank()) {
+                        Button(onClick = { openProvider(context, work.externalUrl.orEmpty(), work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
+                            Icon(Icons.Default.OpenInNew, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("فتح صفحة العمل في المصدر")
+                        }
+                        Text("المصدر: ${work.source} • ${work.sourceLicense}", color = muted(), fontSize = 10.sp)
+                    } else {
+                        Button(onClick = { openWhereToWatch(context, work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
+                            Icon(Icons.Default.PlayArrow, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("ابحث عن منصة مشاهدة رسمية")
+                        }
+                        Text("لم تتوفر بيانات منصات المشاهدة لهذا العمل في مصر. البحث الخارجي قد يعرض خيارات أخرى.", color = muted(), fontSize = 10.sp)
                     }
-                    Text("لم تتوفر بيانات منصات المشاهدة لهذا العمل في مصر. البحث الخارجي قد يعرض خيارات أخرى.", color = muted(), fontSize = 10.sp)
                 }
                 Text("YOFECT PLAY لا يضيف بثًا غير مرخص. التشغيل والجودة داخل التطبيق يتطلبان تكاملًا مع مزود يملك حقوق العرض.", color = muted(), fontSize = 10.sp)
             }
@@ -844,8 +1128,8 @@ private fun SettingsScreen(
             }
             Surface(color = if (hasKey) Color(0xFF123C2D) else Color(0xFF493318), shape = RoundedCornerShape(20.dp)) {
                 Text(
-                    if (hasKey) "المكتبة مفعّلة" else "تحتاج إعدادًا",
-                    color = if (hasKey) Color(0xFF8AE0B2) else Color(0xFFFFD18A),
+                    if (hasKey) "كل المصادر جاهزة" else "المجاني يعمل",
+                    color = Color(0xFF8AE0B2),
                     fontSize = 9.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
                 )
@@ -872,14 +1156,22 @@ private fun SettingsScreen(
                 .background(surfaceDark()).padding(15.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Storage, null, tint = Accent)
-                Text("TMDB • بيانات وصور ومواسم", color = primaryText(), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF55D69A))
+                    Text("TVmaze • المسلسلات والمواسم والحلقات • بدون مفتاح", color = primaryText(), fontSize = 11.sp, modifier = Modifier.padding(start = 9.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF55D69A))
+                    Text("Internet Archive • أعمال بترخيص ملكية عامة • بدون مفتاح", color = primaryText(), fontSize = 11.sp, modifier = Modifier.padding(start = 9.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF55D69A))
+                    Text("Wikimedia Commons • فيديوهات بتراخيص مفتوحة • بدون مفتاح", color = primaryText(), fontSize = 11.sp, modifier = Modifier.padding(start = 9.dp))
+                }
+                Divider(color = surfaceMid())
+                Text("TMDB اختياري: يضيف بيانات وصورًا أوسع للأفلام والمسلسلات، لكنه ليس شرطًا لتشغيل المصادر المجانية.", color = muted(), fontSize = 11.sp, lineHeight = 18.sp)
             }
-            Text(
-                "أدخل مفتاح API لتشغيل الكتالوج والبحث والتفاصيل. المفتاح يُحفظ محليًا على هذا الجهاز.",
-                color = muted(), fontSize = 11.sp, lineHeight = 18.sp
-            )
             OutlinedTextField(
                 value = input,
                 onValueChange = onInput,
@@ -907,8 +1199,8 @@ private fun SettingsScreen(
                 Text("حفظ المفتاح وتحديث المكتبة")
             }
             Text(
-                if (hasKey) "يوجد مفتاح محفوظ أو مضاف وقت البناء." else "لم يتم إعداد مفتاح TMDB بعد.",
-                color = if (hasKey) Color(0xFF58C98C) else Color(0xFFFFC857),
+                if (hasKey) "TMDB مفعّل بالإضافة إلى المصادر المجانية." else "TMDB غير مفعّل، لكن المصادر العامة تعمل بدون مفتاح.",
+                color = Color(0xFF58C98C),
                 fontSize = 10.sp
             )
         }
