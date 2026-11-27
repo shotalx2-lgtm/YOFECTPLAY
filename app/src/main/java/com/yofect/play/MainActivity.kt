@@ -1,6 +1,8 @@
 package com.yofect.play
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -21,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -70,10 +73,13 @@ private fun YofectPlay() {
  var movies by remember{mutableStateOf(emptyList<Work>())}
  var shows by remember{mutableStateOf(emptyList<Work>())}
  var busy by remember{mutableStateOf(true)}
+ var showFeaturedSeries by remember{mutableStateOf(false)}
  LaunchedEffect(Unit){movies=fetchCatalog("movie/popular");shows=fetchCatalog("tv/popular");busy=false}
  MaterialTheme(colorScheme=darkColorScheme(primary=RED,background=BG,surface=Color(0xFF171717))){
   Surface(Modifier.fillMaxSize(),color=BG){
-   if(chosen!=null){
+   if(showFeaturedSeries){
+    FeaturedSeriesScreen(onBack={showFeaturedSeries=false})
+   }else if(chosen!=null){
     Column(Modifier.fillMaxSize()){
      Row(verticalAlignment=Alignment.CenterVertically){
       IconButton(onClick={chosen=null}){Icon(Icons.Default.ArrowBack,null,tint=Color.White)}
@@ -89,7 +95,7 @@ private fun YofectPlay() {
     Column(Modifier.fillMaxSize()){
      Box(Modifier.weight(1f)){
       when(tab){
-       0->Home(movies,shows,busy,category,{category=it},{chosen=it})
+       0->Home(movies,shows,busy,category,{category=it},{chosen=it},{showFeaturedSeries=true})
        1->Search(query,{query=it},movies+shows,{chosen=it})
        2->MessagePage(Icons.Default.Bookmarks,"مكتبتي","احفظ أعمالك المفضلة هنا.")
        else->MessagePage(Icons.Default.Person,"حساب YOFECT PLAY","إدارة الحساب والملفات الشخصية قريبًا.")
@@ -109,7 +115,7 @@ private fun YofectPlay() {
 }
 
 @Composable
-private fun Home(movies:List<Work>,shows:List<Work>,busy:Boolean,category:String,onCategory:(String)->Unit,onOpen:(Work)->Unit){
+private fun Home(movies:List<Work>,shows:List<Work>,busy:Boolean,category:String,onCategory:(String)->Unit,onOpen:(Work)->Unit,onFeaturedSeries:()->Unit){
  LazyColumn(contentPadding=PaddingValues(bottom=18.dp)){
   item{
    Row(Modifier.fillMaxWidth().padding(20.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
@@ -122,6 +128,7 @@ private fun Home(movies:List<Work>,shows:List<Work>,busy:Boolean,category:String
     Column{Text("عالمك من الترفيه",color=Color.White,fontSize=27.sp,fontWeight=FontWeight.ExtraBold);Text("أفلام ومسلسلات من كل مكان",color=Color.LightGray,fontSize=12.sp);Text("اكتشف المكتبة",color=RED,fontWeight=FontWeight.Bold)}
    }
   }
+  item{ FeaturedSeriesBanner(onClick=onFeaturedSeries) }
   item{Row(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.spacedBy(6.dp)){
    listOf("الكل","عربي","تركي","أجنبي","أفلام","مسلسلات").forEach{FilterChip(selected=category==it,onClick={onCategory(it)},label={Text(it)})}
   }}
@@ -166,5 +173,73 @@ private fun MessagePage(icon:androidx.compose.ui.graphics.vector.ImageVector,tit
   Icon(icon,null,tint=RED,modifier=Modifier.size(48.dp))
   Text(title,color=Color.White,fontSize=20.sp,fontWeight=FontWeight.Bold,modifier=Modifier.padding(top=12.dp))
   Text(subtitle,color=GREY,modifier=Modifier.padding(top=8.dp))
+ }
+}
+
+
+private const val SHAHID_SERIES_URL = "https://shahid.mbc.net/ar/series/ما-زلت-في-17-الموسم-1/season-49923989453657-49923989423070"
+
+@Composable
+private fun FeaturedSeriesBanner(onClick:()->Unit){
+ Card(onClick=onClick,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp, vertical=8.dp),colors=CardDefaults.cardColors(containerColor=Color(0xFF241217)),shape=RoundedCornerShape(18.dp)){
+  Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically){
+   Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(6.dp)){
+    Text("مسلسل مميز",color=RED,fontSize=11.sp,fontWeight=FontWeight.Bold)
+    Text("ما زلت في 17",color=Color.White,fontSize=21.sp,fontWeight=FontWeight.ExtraBold)
+    Text("تركي • مدبلج/متعدد الصوت حسب توفر المنصة",color=Color.LightGray,fontSize=11.sp)
+    Text("قائمة الحلقات والتحديثات",color=Color.White,fontWeight=FontWeight.Bold,fontSize=12.sp)
+   }
+   Icon(Icons.Default.PlayCircleFilled,null,tint=RED,modifier=Modifier.size(42.dp))
+  }
+ }
+}
+
+@Composable
+private fun FeaturedSeriesScreen(onBack:()->Unit){
+ val context = LocalContext.current
+ LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(bottom=24.dp)){
+  item{
+   Row(Modifier.fillMaxWidth().padding(12.dp),verticalAlignment=Alignment.CenterVertically){
+    IconButton(onClick=onBack){Icon(Icons.Default.ArrowBack,null,tint=Color.White)}
+    Text("ما زلت في 17",color=Color.White,fontWeight=FontWeight.Bold,fontSize=20.sp)
+   }
+  }
+  item{
+   Box(Modifier.fillMaxWidth().padding(horizontal=16.dp).height(170.dp).background(Brush.linearGradient(listOf(Color(0xFF5B1828),Color(0xFF171717))),RoundedCornerShape(18.dp)).padding(18.dp),contentAlignment=Alignment.BottomStart){
+    Column(verticalArrangement=Arrangement.spacedBy(5.dp)){
+     Text("DAHA 17",color=Color.White,fontSize=12.sp,letterSpacing=3.sp)
+     Text("ما زلت في 17",color=Color.White,fontSize=26.sp,fontWeight=FontWeight.ExtraBold)
+     Text("دراما تركية • الموسم الأول",color=Color.LightGray,fontSize=12.sp)
+    }
+   }
+  }
+  item{
+   Text("الحلقات",color=Color.White,fontSize=20.sp,fontWeight=FontWeight.Bold,modifier=Modifier.padding(start=18.dp,top=20.dp,bottom=6.dp))
+   Text("آخر تحقق من صفحة شاهد الرسمية: 130 حلقة. الحلقة 131 و132 غير مؤكدتين بعد، ولن نعرضهما كحلقتين متاحتين قبل ظهور مصدر موثوق.",color=GREY,fontSize=12.sp,modifier=Modifier.padding(horizontal=18.dp, vertical=6.dp))
+  }
+  items((1..132).toList()){episode->
+   val available = episode<=130
+   Row(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=4.dp).background(Color(0xFF171717),RoundedCornerShape(12.dp)).clickable(enabled=available){
+    val intent=Intent(Intent.ACTION_VIEW,Uri.parse(SHAHID_SERIES_URL))
+    context.startActivity(intent)
+   }.padding(14.dp),verticalAlignment=Alignment.CenterVertically){
+    Box(Modifier.size(38.dp).background(if(available) Color(0xFF3A1820) else Color(0xFF292929),RoundedCornerShape(9.dp)),contentAlignment=Alignment.Center){
+     Text(episode.toString(),color=if(available) Color.White else GREY,fontWeight=FontWeight.Bold)
+    }
+    Spacer(Modifier.width(12.dp))
+    Column(Modifier.weight(1f)){
+     Text("الحلقة $episode",color=if(available) Color.White else GREY,fontWeight=FontWeight.SemiBold)
+     Text(if(available) "متاحة على صفحة المسلسل الرسمية" else "لم يتم التحقق من توفرها بعد",color=GREY,fontSize=10.sp)
+    }
+    if(available) Icon(Icons.Default.PlayArrow,null,tint=RED)
+    else Text("قريبًا؟",color=GREY,fontSize=10.sp)
+   }
+  }
+  item{
+   Text("المشاهدة تفتح صفحة المسلسل الرسمية على شاهد. التشغيل داخل YOFECT PLAY يتطلب تكاملًا مرخصًا من مزود الفيديو؛ لا توجد روابط بث مباشرة مضافة حاليًا.",color=GREY,fontSize=11.sp,modifier=Modifier.padding(18.dp))
+   Button(onClick={context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(SHAHID_SERIES_URL)))},modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp),colors=ButtonDefaults.buttonColors(containerColor=RED)){
+    Text("فتح المسلسل على شاهد")
+   }
+  }
  }
 }
