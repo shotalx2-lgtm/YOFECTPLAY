@@ -344,7 +344,7 @@ private suspend fun searchTvMaze(query: String): List<Work> {
 private suspend fun loadInternetArchive(query: String = "", limit: Int = 18): List<Work> {
     val rights = "(licenseurl:http*publicdomain* OR licenseurl:http*zero/1.0* OR licenseurl:http*by/4.0* OR licenseurl:http*by-sa/4.0*)"
     val q = if (query.isBlank()) "mediatype:movies AND " + rights else
-        "mediatype:movies AND title:(" + query.replace("\\\\", " ").replace("\\"", " ") + ") AND " + rights
+        "mediatype:movies AND title:(" + query.replace(Regex("[^\\p{L}\\p{N} ]"), " ") + ") AND " + rights
     val url = "https://archive.org/advancedsearch.php?q=" + URLEncoder.encode(q, "UTF-8") +
         "&fl[]=identifier&fl[]=title&fl[]=year&fl[]=description&fl[]=licenseurl" +
         "&sort[]=downloads%20desc&rows=" + limit + "&page=1&output=json"
@@ -900,8 +900,7 @@ private fun WelcomeBanner() {
         Column(Modifier.fillMaxWidth(0.72f).padding(start = 20.dp, top = 18.dp, bottom = 18.dp)) {
             Text("YOFECT ORIGINAL EXPERIENCE", color = Color(0xFFFFA6AE), fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
             Spacer(Modifier.height(10.dp))
-            Text("حكايتك الجاية
-بتبدأ من هنا", color = Color.White, fontSize = 25.sp, lineHeight = 31.sp, fontWeight = FontWeight.Black)
+            Text("حكايتك الجاية\nبتبدأ من هنا", color = Color.White, fontSize = 25.sp, lineHeight = 31.sp, fontWeight = FontWeight.Black)
             Spacer(Modifier.height(9.dp))
             Text("اكتشف أفلامًا ومسلسلات من مصادر متعددة، في تجربة واحدة مرتبة.", color = Color(0xFFE8DDE1), fontSize = 11.sp, lineHeight = 17.sp)
         }
