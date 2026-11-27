@@ -10,8 +10,8 @@ android {
   applicationId = "com.yofect.play"
   minSdk = 24
   targetSdk = 35
-  versionCode = 1
-  versionName = "0.1.0"
+  versionCode = 2
+  versionName = "0.2.0"
   val tmdbApiKey = project.findProperty("TMDB_API_KEY")?.toString().orEmpty()
   buildConfigField("String", "TMDB_API_KEY", "\"" + tmdbApiKey + "\"")
  }
