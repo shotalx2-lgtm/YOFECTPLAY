@@ -182,7 +182,8 @@ private fun dedupeWorks(items: List<Work>): List<Work> {
                 rating = if (primary.rating > 0.0) primary.rating else secondary.rating,
                 externalUrl = primary.externalUrl ?: secondary.externalUrl,
                 sourceLicense = primary.sourceLicense.ifBlank { secondary.sourceLicense },
-                episodeCount = if (primary.episodeCount > 0) primary.episodeCount else secondary.episodeCount
+                episodeCount = if (primary.episodeCount > 0) primary.episodeCount else secondary.episodeCount,
+                playbackUrl = primary.playbackUrl ?: secondary.playbackUrl
             )
         }
     }
