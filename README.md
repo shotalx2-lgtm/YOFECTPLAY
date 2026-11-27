@@ -15,3 +15,6 @@ TMDB provides metadata and artwork under its own terms. It does not provide movi
 episode streams, or streaming rights. No unauthorized video streams are included.
 Playback, licensed provider integrations, seasons and episode feeds, persistent favorites,
 authentication, and signed release APK are not implemented yet.
+
+
+Build status: workflow is configured at .github/workflows/android.yml. The generated artifact is a debug APK and is not a signed production release.
