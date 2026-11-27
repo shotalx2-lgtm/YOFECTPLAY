@@ -284,7 +284,7 @@ private suspend fun publicJsonArray(url: String): JSONArray? = withContext(Dispa
 
 private fun cleanHtml(value: String): String =
     value.replace("<[^>]*>".toRegex(), " ").replace("&nbsp;", " ")
-        .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\\"")
+        .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\"")
         .replace("\\s+".toRegex(), " ").trim()
 
 private fun parseTvMazeShow(show: JSONObject): Work? {
