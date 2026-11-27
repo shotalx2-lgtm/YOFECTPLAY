@@ -3,6 +3,8 @@
 Arabic-first Android movie and series discovery app built with Kotlin and Jetpack Compose.
 
 ## Current app capabilities
+- Branded launch screen, first-run onboarding flow with skip/next/start actions, Arabic right-to-left layout, and a custom YOFECT PLAY launcher icon.
+- User-selectable dark and light themes, persisted on the device; TMDB API key entry is masked and saved locally.
 - Dark Arabic interface with home, search, personal favorites, and settings.
 - Trending, popular movie, and popular series shelves.
 - Separate discovery shelves for Arabic, Turkish, Indian, and international productions.
@@ -12,6 +14,7 @@ Arabic-first Android movie and series discovery app built with Kotlin and Jetpac
 - TMDB API key can be supplied as the GitHub Actions secret `TMDB_API_KEY` or entered in the app Settings screen. A locally entered key is stored on the device.
 
 ## Build
+Current app version: `0.2.0` (`versionCode: 2`).
 GitHub Actions builds a debug APK on each push to `main`.
 Artifact name: `YOFECT-PLAY-debug-apk`.
 
