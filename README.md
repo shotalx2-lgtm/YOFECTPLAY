@@ -1,20 +1,24 @@
 # YOFECT PLAY
-Android application foundation built with Kotlin and Jetpack Compose.
 
-Current features:
-- Arabic dark interface with home, search, library, and profile tabs
-- TMDB popular movie and TV metadata integration when an API key is configured
-- Arabic metadata language, posters, overview, original language and release year
-- Arabic, Turkish and international language filters
+Arabic-first Android movie and series discovery app built with Kotlin and Jetpack Compose.
 
-GitHub Actions builds a debug APK on every push to main.
-Configure a repository Actions secret named TMDB_API_KEY with your own TMDB API key.
-Without that secret, the app cannot load live catalog metadata.
+## Current app capabilities
+- Dark Arabic interface with home, search, personal favorites, and settings.
+- Trending, popular movie, and popular series shelves.
+- Separate discovery shelves for Arabic, Turkish, Indian, and international productions.
+- Live TMDB search, Arabic descriptions, posters, backdrops, years, original-language labels, ratings, genres, and series seasons/episode metadata when supplied by TMDB.
+- Favorite list persisted locally on the device.
+- Egypt streaming-provider availability from TMDB Watch Providers when data exists, with links to the listed provider/availability page.
+- TMDB API key can be supplied as the GitHub Actions secret `TMDB_API_KEY` or entered in the app Settings screen. A locally entered key is stored on the device.
 
-TMDB provides metadata and artwork under its own terms. It does not provide movie files,
-episode streams, or streaming rights. No unauthorized video streams are included.
-Playback, licensed provider integrations, seasons and episode feeds, persistent favorites,
-authentication, and signed release APK are not implemented yet.
+## Build
+GitHub Actions builds a debug APK on each push to `main`.
+Artifact name: `YOFECT-PLAY-debug-apk`.
 
+## Important limitations
+- TMDB supplies metadata and artwork, not movie files, episode streams, or streaming rights.
+- This repository does not yet include licensed in-app video playback, a real HD quality selector, user accounts/authentication, subscription/payments, or a production-signed release APK.
+- Playback can only be added for providers that authorize YOFECT PLAY to embed or stream their content. Where TMDB reports availability, the app links to the provider/availability destination rather than pretending that a stream is embedded.
 
-Build status: workflow is configured at .github/workflows/android.yml. The generated artifact is a debug APK and is not a signed production release.
+## Attribution
+This product uses the TMDB API but is not endorsed or certified by TMDB.
