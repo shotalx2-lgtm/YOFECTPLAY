@@ -80,7 +80,8 @@ private data class Catalog(
 )
 private data class Season(val number: Int, val name: String, val episodes: Int)
 private data class Episode(val number: Int, val name: String, val overview: String, val still: String?)
-private data class WorkDetails(val overview: String, val genres: List<String>, val runtime: String, val seasons: List<Season>)
+private data class WatchProvider(val name: String, val logo: String?, val link: String)
+private data class WorkDetails(val overview: String, val genres: List<String>, val runtime: String, val seasons: List<Season>, val providers: List<WatchProvider>, val providerLink: String)
 
 private fun favoriteKey(work: Work) = work.mediaType + ":" + work.id
 private fun getApiKey(context: Context): String {
@@ -144,9 +145,9 @@ private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
     val arShows = async { apiWorks(context, "discover/tv?with_original_language=ar&sort_by=popularity.desc", "tv") }
     val trMovies = async { apiWorks(context, "discover/movie?with_original_language=tr&sort_by=popularity.desc", "movie") }
     val trShows = async { apiWorks(context, "discover/tv?with_original_language=tr&sort_by=popularity.desc", "tv") }
-    val inMovies = async { apiWorks(context, "discover/movie?with_original_language=hi&sort_by=popularity.desc", "movie") }
+    val inMovies = async { apiWorks(context, "discover/movie?with_original_language=hi%7Cta%7Cte%7Cml%7Ckn%7Cbn%7Cmr&sort_by=popularity.desc", "movie") }
     val inShows = async { apiWorks(context, "discover/tv?with_original_language=hi&sort_by=popularity.desc", "tv") }
-    val enMovies = async { apiWorks(context, "discover/movie?with_original_language=en&sort_by=popularity.desc", "movie") }
+    val enMovies = async { apiWorks(context, "discover/movie?without_original_language=ar,tr,hi,ta,te,ml,kn,bn,mr&sort_by=popularity.desc", "movie") }
     val enShows = async { apiWorks(context, "discover/tv?with_original_language=en&sort_by=popularity.desc", "tv") }
     Catalog(
         trending = trending.await(),
@@ -177,7 +178,23 @@ private suspend fun loadDetails(context: Context, work: Work): WorkDetails? {
         val minutes = json.optInt("runtime")
         if (minutes > 0) minutes.toString() + " دقيقة" else "غير محدد"
     }
-    return WorkDetails(json.optString("overview").ifBlank { work.overview }, genres, runtime, seasons)
+    val providerPath = if (work.mediaType == "tv") "tv/" + work.id + "/watch/providers" else "movie/" + work.id + "/watch/providers"
+    val providersJson = apiJson(context, providerPath)?.optJSONObject("results")?.optJSONObject("EG")
+    val providerLink = providersJson?.optString("link").orEmpty()
+    val providerRows = mutableListOf<WatchProvider>()
+    listOf("flatrate", "free", "ads", "rent", "buy").forEach { group ->
+        val array = providersJson?.optJSONArray(group) ?: JSONArray()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val name = item.optString("provider_name")
+            val logoPath = item.optString("logo_path")
+            if (name.isNotBlank()) {
+                val logo = if (logoPath.isBlank() || logoPath == "null") null else IMAGE_BASE + "w92" + logoPath
+                providerRows.add(WatchProvider(name, logo, providerLink))
+            }
+        }
+    }
+    return WorkDetails(json.optString("overview").ifBlank { work.overview }, genres, runtime, seasons, providerRows.distinctBy { it.name }, providerLink)
 }
 
 private suspend fun loadEpisodes(context: Context, work: Work, season: Season): List<Episode> {
@@ -514,12 +531,31 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
                     Text("النوع: " + details!!.genres.joinToString(" • ").ifBlank { "غير محدد" }, color = Muted, fontSize = 11.sp)
                     Text("المدة: " + details!!.runtime, color = Muted, fontSize = 11.sp)
                 }
-                Button(onClick = { openWhereToWatch(context, work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
-                    Icon(Icons.Default.PlayArrow, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("ابحث عن منصة مشاهدة رسمية")
+                if (details?.providers?.isNotEmpty() == true) {
+                    Text("منصات متاحة في مصر", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    details!!.providers.forEach { provider ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(SurfaceDark)
+                                .clickable { openProvider(context, provider.link, work.title) }.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AsyncImage(provider.logo, provider.name, Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+                            Text(provider.name, color = Color.White, modifier = Modifier.weight(1f).padding(start = 10.dp), fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Default.OpenInNew, null, tint = Muted)
+                        }
+                    }
+                    Button(onClick = { openProvider(context, details!!.providerLink, work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
+                        Text("فتح خيارات المشاهدة")
+                    }
+                } else {
+                    Button(onClick = { openWhereToWatch(context, work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
+                        Icon(Icons.Default.PlayArrow, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("ابحث عن منصة مشاهدة رسمية")
+                    }
+                    Text("لم تتوفر بيانات منصات المشاهدة لهذا العمل في مصر. البحث الخارجي قد يعرض خيارات أخرى.", color = Muted, fontSize = 10.sp)
                 }
-                Text("لا يوجد بث فيديو مضاف لهذا العمل حتى الآن. زر المشاهدة يبحث عن المنصات التي تعرضه رسميًا.", color = Muted, fontSize = 10.sp)
+                Text("YOFECT PLAY لا يضيف بثًا غير مرخص. التشغيل والجودة داخل التطبيق يتطلبان تكاملًا مع مزود يملك حقوق العرض.", color = Muted, fontSize = 10.sp)
             }
         }
         if (work.mediaType == "tv") {
@@ -553,9 +589,12 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
     }
 }
 
+private fun openProvider(context: Context, url: String, title: String) {
+    val target = url.ifBlank { "https://www.justwatch.com/eg/search?q=" + URLEncoder.encode(title, "UTF-8") }
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
+}
 private fun openWhereToWatch(context: Context, title: String) {
-    val encoded = URLEncoder.encode(title, "UTF-8")
-    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.justwatch.com/eg/search?q=" + encoded))) }
+    openProvider(context, "", title)
 }
 
 @Composable
