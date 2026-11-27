@@ -137,17 +137,26 @@ private suspend fun apiWorks(context: Context, path: String, fallback: String = 
     }.filter { it.id > 0 }
 }
 
+private suspend fun apiWorksPages(context: Context, path: String, fallback: String = ""): List<Work> {
+    val pages = mutableListOf<Work>()
+    for (page in 1..2) {
+        val separator = if (path.contains("?")) "&" else "?"
+        pages.addAll(apiWorks(context, path + separator + "page=" + page, fallback))
+    }
+    return pages.distinctBy { favoriteKey(it) }
+}
+
 private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
-    val trending = async { apiWorks(context, "trending/all/week") }
-    val movies = async { apiWorks(context, "movie/popular", "movie") }
-    val shows = async { apiWorks(context, "tv/popular", "tv") }
-    val arMovies = async { apiWorks(context, "discover/movie?with_original_language=ar&sort_by=popularity.desc", "movie") }
-    val arShows = async { apiWorks(context, "discover/tv?with_original_language=ar&sort_by=popularity.desc", "tv") }
-    val trMovies = async { apiWorks(context, "discover/movie?with_original_language=tr&sort_by=popularity.desc", "movie") }
-    val trShows = async { apiWorks(context, "discover/tv?with_original_language=tr&sort_by=popularity.desc", "tv") }
-    val inMovies = async { apiWorks(context, "discover/movie?with_original_language=hi%7Cta%7Cte%7Cml%7Ckn%7Cbn%7Cmr&sort_by=popularity.desc", "movie") }
+    val trending = async { apiWorksPages(context, "trending/all/week") }
+    val movies = async { apiWorksPages(context, "movie/popular", "movie") }
+    val shows = async { apiWorksPages(context, "tv/popular", "tv") }
+    val arMovies = async { apiWorksPages(context, "discover/movie?with_original_language=ar&sort_by=popularity.desc", "movie") }
+    val arShows = async { apiWorksPages(context, "discover/tv?with_original_language=ar&sort_by=popularity.desc", "tv") }
+    val trMovies = async { apiWorksPages(context, "discover/movie?with_original_language=tr&sort_by=popularity.desc", "movie") }
+    val trShows = async { apiWorksPages(context, "discover/tv?with_original_language=tr&sort_by=popularity.desc", "tv") }
+    val inMovies = async { apiWorksPages(context, "discover/movie?with_original_language=hi%7Cta%7Cte%7Cml%7Ckn%7Cbn%7Cmr&sort_by=popularity.desc", "movie") }
     val inShows = async { apiWorks(context, "discover/tv?with_original_language=hi&sort_by=popularity.desc", "tv") }
-    val enMovies = async { apiWorks(context, "discover/movie?without_original_language=ar,tr,hi,ta,te,ml,kn,bn,mr&sort_by=popularity.desc", "movie") }
+    val enMovies = async { apiWorksPages(context, "discover/movie?without_original_language=ar,tr,hi,ta,te,ml,kn,bn,mr&sort_by=popularity.desc", "movie") }
     val enShows = async { apiWorks(context, "discover/tv?with_original_language=en&sort_by=popularity.desc", "tv") }
     Catalog(
         trending = trending.await(),
@@ -619,7 +628,7 @@ private fun SettingsScreen(hasKey: Boolean, input: String, onInput: (String) -> 
             Spacer(Modifier.width(8.dp))
             Text("تحديث المكتبة")
         }
-        Text("TMDB يوفر البيانات والصور، ولا يوفر ملفات تشغيل الأفلام أو حقوق بث الحلقات. روابط المشاهدة توجه إلى البحث عن المنصات الرسمية.", color = Muted, fontSize = 10.sp, lineHeight = 16.sp)
+        Text("TMDB يوفر البيانات والصور، ولا يوفر ملفات تشغيل الأفلام أو حقوق بث الحلقات. روابط المشاهدة توجه إلى المنصات الرسمية. This product uses the TMDB API but is not endorsed or certified by TMDB.", color = Muted, fontSize = 10.sp, lineHeight = 16.sp)
     }
 }
 
