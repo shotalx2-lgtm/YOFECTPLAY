@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -205,6 +206,7 @@ private fun YofectPlayApp() {
     var searchStarted by remember { mutableStateOf(false) }
     var favorites by remember { mutableStateOf(readFavorites(context)) }
     var keyInput by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
 
     fun toggleFavorite(work: Work) {
         val next = favorites.toMutableSet()
@@ -251,7 +253,7 @@ private fun YofectPlayApp() {
                 Column(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f)) {
                         when (tab) {
-                            0 -> HomeScreen(catalog, loading, error, { selected = it }, { refreshCatalog() })
+                            0 -> HomeScreen(catalog, loading, error, { selected = it }, { scope.launch { refreshCatalog() } })
                             1 -> SearchScreen(query, { query = it }, searchResults, searchBusy, searchStarted) { selected = it }
                             2 -> LibraryScreen(catalog, favorites) { selected = it }
                             else -> SettingsScreen(
@@ -261,8 +263,9 @@ private fun YofectPlayApp() {
                                 onSave = {
                                     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("tmdb_key", keyInput.trim()).apply()
                                     keyInput = ""
+                                    scope.launch { refreshCatalog() }
                                 },
-                                onRefresh = { refreshCatalog() }
+                                onRefresh = { scope.launch { refreshCatalog() } }
                             )
                         }
                     }
