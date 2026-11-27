@@ -115,7 +115,9 @@ private data class Episode(val number: Int, val name: String, val overview: Stri
 private data class WatchProvider(val name: String, val logo: String?, val link: String)
 private data class WorkDetails(val overview: String, val genres: List<String>, val runtime: String, val seasons: List<Season>, val providers: List<WatchProvider>, val providerLink: String)
 
-private fun favoriteKey(work: Work) = work.mediaType + ":" + work.source + ":" + work.id
+private fun favoriteKey(work: Work) =
+    if (work.source == "TMDB") work.mediaType + ":" + work.id
+    else work.mediaType + ":" + work.source + ":" + work.id
 
 private fun normalizedTitle(value: String): String {
     val plain = Normalizer.normalize(value.lowercase(Locale.ROOT), Normalizer.Form.NFD)
@@ -230,9 +232,9 @@ private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
     val archiveItems = publicDomain.await()
     val commonsItems = openVideos.await()
     Catalog(
-        trending = dedupeWorks(trending.await() + noKeyShows.take(8) + archiveItems.take(6)),
+        trending = dedupeWorks(trending.await()),
         movies = dedupeWorks(movies.await()),
-        shows = dedupeWorks(shows.await() + noKeyShows),
+        shows = dedupeWorks(shows.await()),
         arabic = dedupeWorks(arMovies.await() + arShows.await() + noKeyShows.filter { it.language == "AR" }),
         turkish = dedupeWorks(trMovies.await() + trShows.await() + noKeyShows.filter { it.language == "TR" }),
         indian = dedupeWorks(inMovies.await() + inShows.await() + noKeyShows.filter { it.language == "HI" }),
@@ -283,7 +285,7 @@ private suspend fun publicJsonArray(url: String): JSONArray? = withContext(Dispa
 private fun cleanHtml(value: String): String =
     value.replace("<[^>]*>".toRegex(), " ").replace("&nbsp;", " ")
         .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\\"")
-        .replace("\\\\s+".toRegex(), " ").trim()
+        .replace("\\s+".toRegex(), " ").trim()
 
 private fun parseTvMazeShow(show: JSONObject): Work? {
     val id = show.optInt("id")
@@ -680,13 +682,24 @@ private fun YofectPlayApp() {
 private fun BrandMark(size: Int = 62) {
     Box(
         Modifier.size(size.dp).clip(RoundedCornerShape((size / 3).dp))
-            .background(Brush.linearGradient(listOf(Color(0xFFFF3545), Accent, Color(0xFF8D0010)))),
+            .background(Brush.linearGradient(listOf(Color(0xFF32131C), Color(0xFF17131A), Color(0xFF09090D)))),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            Icons.Default.PlayArrow, contentDescription = "YOFECT PLAY",
-            tint = Color.White, modifier = Modifier.size((size * 0.66f).dp)
-        )
+        Box(
+            Modifier.size((size * 0.72f).dp).clip(RoundedCornerShape((size / 4).dp))
+                .background(Brush.linearGradient(listOf(Color(0xFFFF4B58), Color(0xFFC90019)))),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Movie, null, tint = Color.White, modifier = Modifier.size((size * 0.48f).dp))
+            Box(
+                Modifier.align(Alignment.BottomEnd).padding(2.dp)
+                    .size((size * 0.26f).dp).clip(RoundedCornerShape(50))
+                    .background(Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PlayArrow, null, tint = Color(0xFFD50922), modifier = Modifier.size((size * 0.20f).dp))
+            }
+        }
     }
 }
 
@@ -812,12 +825,17 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
     }
     LazyColumn(contentPadding = PaddingValues(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 13.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text("YOFECT", color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-                    Text("PLAY", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 6.sp)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BrandMark(48)
+                    Column(Modifier.padding(start = 11.dp)) {
+                        Text("YOFECT PLAY", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                        Text("مساحتك لاكتشاف الترفيه", color = muted(), fontSize = 10.sp)
+                    }
                 }
-                IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "تحديث", tint = Color.White) }
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Default.Refresh, "تحديث", tint = Color.White, modifier = Modifier.size(22.dp))
+                }
             }
         }
         if (catalog.trending.isNotEmpty()) item { HeroBanner(catalog.trending.first(), onOpen) }
@@ -867,10 +885,25 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
 
 @Composable
 private fun WelcomeBanner() {
-    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(190.dp).clip(RoundedCornerShape(22.dp)).background(Brush.linearGradient(listOf(Color(0xFF5D1322), Color(0xFF21131B), surfaceDark()))), contentAlignment = Alignment.BottomStart) {
-        Column(Modifier.padding(20.dp)) {
-            Text("كل حكاية تبدأ هنا", color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Black)
-            Text("أفلام ومسلسلات عربية وعالمية", color = Color.LightGray, fontSize = 13.sp)
+    Box(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(208.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF691827), Color(0xFF29151F), Color(0xFF11131A)))),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            Modifier.align(Alignment.CenterEnd).padding(end = 20.dp)
+                .size(116.dp).clip(RoundedCornerShape(30.dp))
+                .background(Color(0x22FFFFFF)),
+            contentAlignment = Alignment.Center
+        ) { BrandMark(88) }
+        Column(Modifier.fillMaxWidth(0.72f).padding(start = 20.dp, top = 18.dp, bottom = 18.dp)) {
+            Text("YOFECT ORIGINAL EXPERIENCE", color = Color(0xFFFFA6AE), fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+            Spacer(Modifier.height(10.dp))
+            Text("حكايتك الجاية
+بتبدأ من هنا", color = Color.White, fontSize = 25.sp, lineHeight = 31.sp, fontWeight = FontWeight.Black)
+            Spacer(Modifier.height(9.dp))
+            Text("اكتشف أفلامًا ومسلسلات من مصادر متعددة، في تجربة واحدة مرتبة.", color = Color(0xFFE8DDE1), fontSize = 11.sp, lineHeight = 17.sp)
         }
     }
 }
@@ -920,7 +953,7 @@ private fun PosterCard(work: Work, onOpen: (Work) -> Unit) {
             }
         }
         Text(work.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text((if (work.mediaType == "tv") "مسلسل" else "فيلم") + " • " + work.year, color = muted(), fontSize = 10.sp)
+        Text((if (work.mediaType == "tv") "مسلسل" else "فيلم") + " • " + work.year + " • " + work.source, color = muted(), fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
