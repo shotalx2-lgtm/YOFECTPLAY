@@ -149,7 +149,7 @@ private fun normalizedTitle(value: String): String {
 
 private fun identityKey(work: Work): String {
     val title = normalizedTitle(work.title)
-    return if (title.isBlank()) favoriteKey(work)
+    return if (title.isBlank()) work.mediaType + ":" + work.source + ":" + work.id
     else work.mediaType + ":" + title + ":" + work.year.take(4)
 }
 
