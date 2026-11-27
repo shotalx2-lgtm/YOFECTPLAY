@@ -223,8 +223,8 @@ private suspend fun apiJson(context: Context, path: String): JSONObject? = withC
         val endpoint = URL("https://api.themoviedb.org/3/" + path + separator +
             "api_key=" + URLEncoder.encode(key, "UTF-8") + "&language=ar-EG&region=EG")
         connection = endpoint.openConnection() as HttpURLConnection
-        connection.connectTimeout = 15000
-        connection.readTimeout = 18000
+        connection.connectTimeout = 8000
+        connection.readTimeout = 10000
         connection.requestMethod = "GET"
         if (connection.responseCode !in 200..299) return@withContext null
         JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
@@ -243,12 +243,9 @@ private suspend fun apiWorks(context: Context, path: String, fallback: String = 
 }
 
 private suspend fun apiWorksPages(context: Context, path: String, fallback: String = ""): List<Work> {
-    val pages = mutableListOf<Work>()
-    for (page in 1..2) {
-        val separator = if (path.contains("?")) "&" else "?"
-        pages.addAll(apiWorks(context, path + separator + "page=" + page, fallback))
-    }
-    return pages.distinctBy { favoriteKey(it) }
+    // Load the first page during startup to avoid a burst of parallel requests on slower phones.
+    val separator = if (path.contains("?")) "&" else "?"
+    return apiWorks(context, path + separator + "page=1", fallback)
 }
 
 private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
@@ -291,8 +288,8 @@ private suspend fun publicJsonObject(url: String): JSONObject? = withContext(Dis
     var connection: HttpURLConnection? = null
     try {
         connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 12000
-        connection.readTimeout = 15000
+        connection.connectTimeout = 8000
+        connection.readTimeout = 10000
         connection.requestMethod = "GET"
         connection.setRequestProperty("User-Agent", "YOFECT-PLAY/0.3 (Android; public metadata clients)")
         connection.setRequestProperty("Accept", "application/json")
@@ -309,8 +306,8 @@ private suspend fun publicJsonArray(url: String): JSONArray? = withContext(Dispa
     var connection: HttpURLConnection? = null
     try {
         connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 12000
-        connection.readTimeout = 15000
+        connection.connectTimeout = 8000
+        connection.readTimeout = 10000
         connection.requestMethod = "GET"
         connection.setRequestProperty("User-Agent", "YOFECT-PLAY/0.3 (Android; public metadata clients)")
         connection.setRequestProperty("Accept", "application/json")
@@ -360,7 +357,9 @@ private fun parseTvMazeShow(show: JSONObject): Work? {
 }
 
 private suspend fun loadTvMazeShows(): List<Work> = coroutineScope {
-    val pages = listOf(0, 10, 20, 30).map { page ->
+    // TVmaze uses zero-based page numbers (0, 1, 2...), not offsets of ten.
+    // Three pages are enough for the initial catalogue and keep startup lightweight.
+    val pages = listOf(0, 1, 2).map { page ->
         async { publicJsonArray("https://api.tvmaze.com/shows?page=" + page) ?: JSONArray() }
     }
     val result = mutableListOf<Work>()
