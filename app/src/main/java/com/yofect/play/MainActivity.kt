@@ -117,9 +117,29 @@ private data class Episode(val number: Int, val name: String, val overview: Stri
 private data class WatchProvider(val name: String, val logo: String?, val link: String)
 private data class WorkDetails(val overview: String, val genres: List<String>, val runtime: String, val seasons: List<Season>, val providers: List<WatchProvider>, val providerLink: String)
 
-private fun favoriteKey(work: Work) =
-    if (work.source == "TMDB") work.mediaType + ":" + work.id
-    else work.mediaType + ":" + work.source + ":" + work.id
+private fun favoriteKey(work: Work) = identityKey(work)
+
+private fun legacyFavoriteKeys(work: Work): Set<String> = setOf(
+    work.mediaType + ":" + work.id,
+    work.mediaType + ":" + work.source + ":" + work.id
+)
+
+private fun isFavorite(work: Work, favorites: Set<String>): Boolean =
+    favorites.contains(favoriteKey(work)) || legacyFavoriteKeys(work).any { favorites.contains(it) }
+
+private fun sameCatalogWork(first: Work, second: Work): Boolean {
+    if (first.mediaType != second.mediaType) return false
+    if (normalizedTitle(first.title) != normalizedTitle(second.title)) return false
+    val firstYear = first.year.take(4)
+    val secondYear = second.year.take(4)
+    return firstYear.isBlank() || secondYear.isBlank() || firstYear == secondYear
+}
+
+private fun uniqueShelf(seen: MutableList<Work>, items: List<Work>): List<Work> =
+    dedupeWorks(items).filter { work ->
+        if (seen.any { sameCatalogWork(it, work) }) false
+        else { seen.add(work); true }
+    }
 
 private fun normalizedTitle(value: String): String {
     val plain = Normalizer.normalize(value.lowercase(Locale.ROOT), Normalizer.Form.NFD)
@@ -143,16 +163,29 @@ private fun sourcePriority(work: Work): Int = when (work.source) {
 }
 
 private fun dedupeWorks(items: List<Work>): List<Work> {
-    val map = LinkedHashMap<String, Work>()
-    items.filter { it.title.isNotBlank() && it.id != 0 }.forEach { work ->
-        val key = identityKey(work)
-        val old = map[key]
-        if (old == null || sourcePriority(work) > sourcePriority(old) ||
-            (old.poster.isNullOrBlank() && !work.poster.isNullOrBlank()) ||
-            (old.overview.isBlank() && work.overview.isNotBlank())
-        ) map[key] = work
+    val result = mutableListOf<Work>()
+    items.filter { it.title.isNotBlank() && it.id != 0 }.forEach { candidate ->
+        val index = result.indexOfFirst { sameCatalogWork(it, candidate) }
+        if (index < 0) {
+            result.add(candidate)
+        } else {
+            val previous = result[index]
+            val primary = if (sourcePriority(candidate) > sourcePriority(previous)) candidate else previous
+            val secondary = if (primary === candidate) previous else candidate
+            result[index] = primary.copy(
+                overview = primary.overview.ifBlank { secondary.overview },
+                poster = primary.poster ?: secondary.poster,
+                backdrop = primary.backdrop ?: secondary.backdrop,
+                year = primary.year.ifBlank { secondary.year },
+                language = primary.language.ifBlank { secondary.language },
+                rating = if (primary.rating > 0.0) primary.rating else secondary.rating,
+                externalUrl = primary.externalUrl ?: secondary.externalUrl,
+                sourceLicense = primary.sourceLicense.ifBlank { secondary.sourceLicense },
+                episodeCount = if (primary.episodeCount > 0) primary.episodeCount else secondary.episodeCount
+            )
+        }
     }
-    return map.values.toList()
+    return result
 }
 private fun getApiKey(context: Context): String {
     val local = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("tmdb_key", "").orEmpty()
@@ -589,7 +622,14 @@ private fun YofectPlayApp() {
     fun toggleFavorite(work: Work) {
         val next = favorites.toMutableSet()
         val id = favoriteKey(work)
-        if (!next.add(id)) next.remove(id)
+        val oldKeys = legacyFavoriteKeys(work)
+        val alreadySaved = next.contains(id) || oldKeys.any { next.contains(it) }
+        if (alreadySaved) {
+            next.remove(id)
+            next.removeAll(oldKeys)
+        } else {
+            next.add(id)
+        }
         favorites = next
         prefs.edit().putStringSet("favorites", next).apply()
     }
@@ -665,7 +705,7 @@ private fun YofectPlayApp() {
                         if (selected != null) {
                             DetailScreen(
                                 work = selected!!,
-                                favorite = favorites.contains(favoriteKey(selected!!)),
+                                favorite = isFavorite(selected!!, favorites),
                                 onBack = { selected = null },
                                 onFavorite = { toggleFavorite(selected!!) }
                             )
@@ -879,6 +919,14 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
         "مسلسلات" -> source.filter { it.mediaType == "tv" }
         else -> source
     }
+    val seenShelves = mutableListOf<Work>()
+    val trendingShelf = uniqueShelf(seenShelves, catalog.trending)
+    val moviesShelf = uniqueShelf(seenShelves, catalog.movies)
+    val showsShelf = uniqueShelf(seenShelves, catalog.shows)
+    val openShowsShelf = uniqueShelf(seenShelves, catalog.openShows)
+    val publicDomainShelf = uniqueShelf(seenShelves, catalog.publicDomain)
+    val openVideosShelf = uniqueShelf(seenShelves, catalog.openVideos)
+    val animeShelf = uniqueShelf(seenShelves, catalog.anime)
     LazyColumn(contentPadding = PaddingValues(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -914,13 +962,13 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
         if (loading) item { LoadingBlock() }
         if (error.isNotBlank()) item { NoticeCard(error) }
         if (region == "الكل") {
-            if (catalog.trending.isNotEmpty()) item { PosterSection("مختارات لك", dedupeWorks(catalog.trending), onOpen) }
-            if (catalog.movies.isNotEmpty()) item { PosterSection("أفلام شائعة", dedupeWorks(catalog.movies), onOpen) }
-            if (catalog.shows.isNotEmpty()) item { PosterSection("مسلسلات شائعة", dedupeWorks(catalog.shows), onOpen) }
-            if (catalog.openShows.isNotEmpty()) item { PosterSection("مسلسلات من TVmaze • بدون مفتاح", catalog.openShows, onOpen) }
-            if (catalog.publicDomain.isNotEmpty()) item { PosterSection("أفلام بترخيص ملكية عامة", catalog.publicDomain, onOpen) }
-            if (catalog.openVideos.isNotEmpty()) item { PosterSection("فيديوهات بتراخيص مفتوحة", catalog.openVideos, onOpen) }
-            if (catalog.anime.isNotEmpty()) item { PosterSection("عالم الأنمي • Kitsu بدون مفتاح", catalog.anime, onOpen) }
+            if (trendingShelf.isNotEmpty()) item { PosterSection("مختارات لك", trendingShelf, onOpen) }
+            if (moviesShelf.isNotEmpty()) item { PosterSection("أفلام شائعة", moviesShelf, onOpen) }
+            if (showsShelf.isNotEmpty()) item { PosterSection("مسلسلات شائعة", showsShelf, onOpen) }
+            if (openShowsShelf.isNotEmpty()) item { PosterSection("مسلسلات من TVmaze • بدون مفتاح", openShowsShelf, onOpen) }
+            if (publicDomainShelf.isNotEmpty()) item { PosterSection("أفلام بترخيص ملكية عامة", publicDomainShelf, onOpen) }
+            if (openVideosShelf.isNotEmpty()) item { PosterSection("فيديوهات بتراخيص مفتوحة", openVideosShelf, onOpen) }
+            if (animeShelf.isNotEmpty()) item { PosterSection("عالم الأنمي • Kitsu بدون مفتاح", animeShelf, onOpen) }
         }
         if (filtered.isNotEmpty()) {
             val heading = when (region) {
@@ -1051,7 +1099,7 @@ private fun WorkListRow(work: Work, onOpen: (Work) -> Unit) {
 @Composable
 private fun LibraryScreen(catalog: Catalog, favorites: Set<String>, onOpen: (Work) -> Unit) {
     val all = dedupeWorks(catalog.trending + catalog.movies + catalog.shows + catalog.arabic + catalog.turkish + catalog.indian + catalog.international + catalog.openShows + catalog.publicDomain + catalog.openVideos + catalog.anime)
-    val saved = all.filter { favorites.contains(favoriteKey(it)) }
+    val saved = all.filter { isFavorite(it, favorites) }
     Column(Modifier.fillMaxSize()) {
         Text("قائمتي", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(20.dp))
         if (saved.isEmpty()) {
