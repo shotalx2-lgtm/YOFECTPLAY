@@ -96,7 +96,8 @@ private data class Work(
     val rating: Double,
     val source: String = "TMDB",
     val externalUrl: String? = null,
-    val sourceLicense: String = ""
+    val sourceLicense: String = "",
+    val episodeCount: Int = 0
 )
 private data class Catalog(
     val trending: List<Work> = emptyList(),
@@ -108,7 +109,8 @@ private data class Catalog(
     val international: List<Work> = emptyList(),
     val openShows: List<Work> = emptyList(),
     val publicDomain: List<Work> = emptyList(),
-    val openVideos: List<Work> = emptyList()
+    val openVideos: List<Work> = emptyList(),
+    val anime: List<Work> = emptyList()
 )
 private data class Season(val number: Int, val name: String, val episodes: Int, val sourceId: Int = 0)
 private data class Episode(val number: Int, val name: String, val overview: String, val still: String?)
@@ -134,6 +136,7 @@ private fun identityKey(work: Work): String {
 private fun sourcePriority(work: Work): Int = when (work.source) {
     "TMDB" -> 4
     "TVmaze" -> 3
+    "Kitsu" -> 3
     "Internet Archive" -> 2
     "Wikimedia Commons" -> 1
     else -> 0
@@ -217,6 +220,7 @@ private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
     val openShows = async { loadTvMazeShows() }
     val publicDomain = async { loadInternetArchive("", 20) }
     val openVideos = async { loadCommonsVideos("", 16) }
+    val anime = async { loadKitsuAnime("", 20) }
     val trending = async { apiWorksPages(context, "trending/all/week") }
     val movies = async { apiWorksPages(context, "movie/popular", "movie") }
     val shows = async { apiWorksPages(context, "tv/popular", "tv") }
@@ -231,6 +235,7 @@ private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
     val noKeyShows = openShows.await()
     val archiveItems = publicDomain.await()
     val commonsItems = openVideos.await()
+    val animeItems = anime.await()
     Catalog(
         trending = dedupeWorks(trending.await()),
         movies = dedupeWorks(movies.await()),
@@ -241,7 +246,8 @@ private suspend fun loadCatalog(context: Context): Catalog = coroutineScope {
         international = dedupeWorks(enMovies.await() + enShows.await() + noKeyShows.filter { it.language !in listOf("AR", "TR", "HI") }),
         openShows = dedupeWorks(noKeyShows),
         publicDomain = archiveItems,
-        openVideos = commonsItems
+        openVideos = commonsItems,
+        anime = dedupeWorks(animeItems)
     )
 }
 
@@ -416,11 +422,57 @@ private suspend fun loadCommonsVideos(query: String = "", limit: Int = 16): List
     return dedupeWorks(results)
 }
 
+
+private fun parseKitsuAnime(item: JSONObject): Work? {
+    val attributes = item.optJSONObject("attributes") ?: return null
+    val rawId = item.optString("id")
+    val numericId = rawId.toIntOrNull() ?: (rawId.hashCode() and 0x7fffffff)
+    if (numericId <= 0) return null
+    val titles = attributes.optJSONObject("titles") ?: JSONObject()
+    val title = attributes.optString("canonicalTitle").ifBlank {
+        titles.optString("en").ifBlank { titles.optString("en_jp").ifBlank { titles.optString("ja_jp") } }
+    }
+    if (title.isBlank()) return null
+    val posterObject = attributes.optJSONObject("posterImage") ?: JSONObject()
+    val poster = posterObject.optString("large").ifBlank {
+        posterObject.optString("original").ifBlank { posterObject.optString("medium") }
+    }
+    val subtype = attributes.optString("subtype").lowercase(Locale.ROOT)
+    val slug = attributes.optString("slug").ifBlank { rawId }
+    val rawRating = attributes.optString("averageRating").toDoubleOrNull() ?: 0.0
+    return Work(
+        id = -numericId,
+        title = title,
+        overview = attributes.optString("synopsis"),
+        poster = poster.ifBlank { null },
+        backdrop = poster.ifBlank { null },
+        year = attributes.optString("startDate").take(4),
+        language = "JA",
+        mediaType = if (subtype == "movie") "movie" else "tv",
+        rating = (rawRating / 10.0).coerceIn(0.0, 10.0),
+        source = "Kitsu",
+        externalUrl = "https://kitsu.io/anime/" + slug,
+        sourceLicense = "Kitsu public metadata",
+        episodeCount = attributes.optInt("episodeCount")
+    )
+}
+
+private suspend fun loadKitsuAnime(query: String = "", limit: Int = 20): List<Work> {
+    val base = "https://kitsu.io/api/edge/anime?"
+    val params = if (query.isBlank()) "sort=-userCount&page%5Blimit%5D=$limit"
+    else "filter%5Btext%5D=" + URLEncoder.encode(query, "UTF-8") + "&page%5Blimit%5D=$limit"
+    val data = publicJsonObject(base + params)?.optJSONArray("data") ?: JSONArray()
+    return (0 until data.length()).mapNotNull { index ->
+        runCatching { parseKitsuAnime(data.optJSONObject(index) ?: JSONObject()) }.getOrNull()
+    }
+}
+
 private suspend fun searchPublicSources(query: String): List<Work> = coroutineScope {
     val tv = async { searchTvMaze(query) }
+    val anime = async { loadKitsuAnime(query, 10) }
     val archive = async { loadInternetArchive(query, 8) }
     val commons = async { loadCommonsVideos(query, 8) }
-    dedupeWorks(tv.await() + archive.await() + commons.await())
+    dedupeWorks(tv.await() + anime.await() + archive.await() + commons.await())
 }
 
 private suspend fun loadTvMazeDetails(work: Work): WorkDetails {
@@ -447,6 +499,10 @@ private suspend fun loadTvMazeDetails(work: Work): WorkDetails {
 
 private suspend fun loadDetails(context: Context, work: Work): WorkDetails? {
     if (work.source == "TVmaze") return loadTvMazeDetails(work)
+    if (work.source == "Kitsu") {
+        val episodes = if (work.episodeCount > 0) work.episodeCount.toString() + " حلقة" else "غير محدد"
+        return WorkDetails(work.overview, emptyList(), episodes, emptyList(), emptyList(), work.externalUrl.orEmpty())
+    }
     if (work.source != "TMDB") {
         return WorkDetails(work.overview, emptyList(), "غير متاح من هذا المصدر", emptyList(), emptyList(), work.externalUrl.orEmpty())
     }
@@ -544,7 +600,7 @@ private fun YofectPlayApp() {
         val loaded = runCatching { loadCatalog(context) }
         catalog = loaded.getOrDefault(Catalog())
         loading = false
-        if (loaded.isFailure || (catalog.trending + catalog.openShows + catalog.publicDomain + catalog.openVideos).isEmpty()) {
+        if (loaded.isFailure || (catalog.trending + catalog.openShows + catalog.publicDomain + catalog.openVideos + catalog.anime).isEmpty()) {
             error = "تعذر الاتصال بالمصادر الآن. تحقق من الإنترنت ثم حاول التحديث."
         } else if (getApiKey(context).isBlank()) {
             error = "المصادر المجانية تعمل بدون مفتاح. أضف TMDB اختياريًا لتوسيع بيانات الأفلام والصور."
@@ -816,7 +872,7 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
         "تركي" -> catalog.turkish
         "هندي" -> catalog.indian
         "أجنبي" -> catalog.international
-        else -> catalog.trending + catalog.movies + catalog.shows + catalog.openShows + catalog.publicDomain + catalog.openVideos
+        else -> catalog.trending + catalog.movies + catalog.shows + catalog.openShows + catalog.publicDomain + catalog.openVideos + catalog.anime
     }.let { dedupeWorks(it) }
     val filtered = when (media) {
         "أفلام" -> source.filter { it.mediaType == "movie" }
@@ -864,6 +920,7 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
             if (catalog.openShows.isNotEmpty()) item { PosterSection("مسلسلات من TVmaze • بدون مفتاح", catalog.openShows, onOpen) }
             if (catalog.publicDomain.isNotEmpty()) item { PosterSection("أفلام بترخيص ملكية عامة", catalog.publicDomain, onOpen) }
             if (catalog.openVideos.isNotEmpty()) item { PosterSection("فيديوهات بتراخيص مفتوحة", catalog.openVideos, onOpen) }
+            if (catalog.anime.isNotEmpty()) item { PosterSection("عالم الأنمي • Kitsu بدون مفتاح", catalog.anime, onOpen) }
         }
         if (filtered.isNotEmpty()) {
             val heading = when (region) {
@@ -993,7 +1050,7 @@ private fun WorkListRow(work: Work, onOpen: (Work) -> Unit) {
 
 @Composable
 private fun LibraryScreen(catalog: Catalog, favorites: Set<String>, onOpen: (Work) -> Unit) {
-    val all = dedupeWorks(catalog.trending + catalog.movies + catalog.shows + catalog.arabic + catalog.turkish + catalog.indian + catalog.international + catalog.openShows + catalog.publicDomain + catalog.openVideos)
+    val all = dedupeWorks(catalog.trending + catalog.movies + catalog.shows + catalog.arabic + catalog.turkish + catalog.indian + catalog.international + catalog.openShows + catalog.publicDomain + catalog.openVideos + catalog.anime)
     val saved = all.filter { favorites.contains(favoriteKey(it)) }
     Column(Modifier.fillMaxSize()) {
         Text("قائمتي", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(20.dp))
@@ -1089,7 +1146,7 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
                 Text("YOFECT PLAY لا يضيف بثًا غير مرخص. التشغيل والجودة داخل التطبيق يتطلبان تكاملًا مع مزود يملك حقوق العرض.", color = muted(), fontSize = 10.sp)
             }
         }
-        if (work.mediaType == "tv") {
+        if (work.mediaType == "tv" && work.source != "Kitsu") {
             item { SectionHeader("المواسم والحلقات") }
             if (loading) item { LoadingBlock() }
             if (!loading && details?.seasons.isNullOrEmpty()) item { NoticeCard("لم تتوفر معلومات المواسم لهذا المسلسل في قاعدة البيانات.") }
@@ -1200,6 +1257,10 @@ private fun SettingsScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF55D69A))
                     Text("Wikimedia Commons • فيديوهات بتراخيص مفتوحة • بدون مفتاح", color = primaryText(), fontSize = 11.sp, modifier = Modifier.padding(start = 9.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF55D69A))
+                    Text("Kitsu • قاعدة أنمي عامة • بدون مفتاح للقراءة", color = primaryText(), fontSize = 11.sp, modifier = Modifier.padding(start = 9.dp))
                 }
                 Divider(color = surfaceMid())
                 Text("TMDB اختياري: يضيف بيانات وصورًا أوسع للأفلام والمسلسلات، لكنه ليس شرطًا لتشغيل المصادر المجانية.", color = muted(), fontSize = 11.sp, lineHeight = 18.sp)
