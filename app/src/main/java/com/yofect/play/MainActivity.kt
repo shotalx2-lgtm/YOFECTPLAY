@@ -97,7 +97,8 @@ private data class Work(
     val source: String = "TMDB",
     val externalUrl: String? = null,
     val sourceLicense: String = "",
-    val episodeCount: Int = 0
+    val episodeCount: Int = 0,
+    val playbackUrl: String? = null
 )
 private data class Catalog(
     val trending: List<Work> = emptyList(),
@@ -413,6 +414,40 @@ private suspend fun loadInternetArchive(query: String = "", limit: Int = 18): Li
     return dedupeWorks(results)
 }
 
+private suspend fun resolvePlayableStream(work: Work): String? = withContext(Dispatchers.IO) {
+    work.playbackUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let { return@withContext it }
+    if (work.source != "Internet Archive") return@withContext null
+    val identifier = work.externalUrl?.substringAfterLast("/")?.takeIf { it.isNotBlank() } ?: return@withContext null
+    val metadata = publicJsonObject("https://archive.org/metadata/" + identifier) ?: return@withContext null
+    val meta = metadata.optJSONObject("metadata") ?: JSONObject()
+    val license = meta.optString("licenseurl").ifBlank { work.sourceLicense }
+    val allowed = license.contains("publicdomain", true) || license.contains("zero/1.0", true) ||
+        license.contains("by/4.0", true) || license.contains("by-sa/4.0", true)
+    if (!allowed) return@withContext null
+    val files = metadata.optJSONArray("files") ?: return@withContext null
+    val candidates = mutableListOf<Pair<Int, String>>()
+    for (i in 0 until files.length()) {
+        val file = files.optJSONObject(i) ?: continue
+        val name = file.optString("name")
+        val size = file.optString("size").toLongOrNull() ?: 0L
+        if (name.isBlank() || size <= 0L || file.optString("private") == "true") continue
+        val ext = name.substringAfterLast(".", "").lowercase(Locale.ROOT)
+        val priority = when (ext) {
+            "mp4" -> 0
+            "m4v" -> 1
+            "webm" -> 2
+            "ogv", "ogg" -> 3
+            else -> continue
+        }
+        candidates.add(priority to name)
+    }
+    val selected = candidates.sortedBy { it.first }.firstOrNull()?.second ?: return@withContext null
+    val encodedPath = selected.split("/").joinToString("/") {
+        URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+    }
+    "https://archive.org/download/" + identifier + "/" + encodedPath
+}
+
 private fun allowedCommonsLicense(label: String): Boolean {
     val value = label.trim().lowercase(Locale.ROOT)
     return value.contains("public domain") || value.contains("cc0") ||
@@ -447,7 +482,8 @@ private suspend fun loadCommonsVideos(query: String = "", limit: Int = 16): List
                     id = id, title = title, overview = description,
                     poster = thumb, backdrop = thumb, year = "", language = "—",
                     mediaType = "movie", rating = 0.0, source = "Wikimedia Commons",
-                    externalUrl = pageUrl, sourceLicense = license
+                    externalUrl = pageUrl, sourceLicense = license,
+                    playbackUrl = info.optString("url").takeIf { it.startsWith("https://") || it.startsWith("http://") }
                 )
             )
         }
@@ -1122,6 +1158,14 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
     var selectedSeason by remember(work.id, work.mediaType) { mutableStateOf<Season?>(null) }
     var episodes by remember(work.id, work.mediaType) { mutableStateOf<List<Episode>>(emptyList()) }
     var episodesLoading by remember { mutableStateOf(false) }
+    var playableUrl by remember(work.id, work.source) { mutableStateOf<String?>(null) }
+    var playbackChecking by remember(work.id, work.source) { mutableStateOf(true) }
+
+    LaunchedEffect(work.id, work.source, work.playbackUrl) {
+        playbackChecking = true
+        playableUrl = resolvePlayableStream(work)
+        playbackChecking = false
+    }
 
     LaunchedEffect(work.id, work.mediaType, work.source) {
         details = loadDetails(context, work)
@@ -1157,6 +1201,34 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
                 if (details != null) {
                     Text("النوع: " + details!!.genres.joinToString(" • ").ifBlank { "غير محدد" }, color = muted(), fontSize = 11.sp)
                     Text("المدة: " + details!!.runtime, color = muted(), fontSize = 11.sp)
+                }
+                if (playbackChecking) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(color = Accent, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("جاري التحقق من ملف الفيديو والصوت...", color = muted(), fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 9.dp))
+                    }
+                } else if (!playableUrl.isNullOrBlank()) {
+                    Button(
+                        onClick = {
+                            context.startActivity(
+                                Intent(context, PlaybackActivity::class.java)
+                                    .putExtra(PlaybackActivity.EXTRA_URL, playableUrl)
+                                    .putExtra(PlaybackActivity.EXTRA_TITLE, work.title)
+                                    .putExtra(PlaybackActivity.EXTRA_ATTRIBUTION, work.source + " • " + work.sourceLicense)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                        shape = RoundedCornerShape(13.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("تشغيل الفيديو والصوت داخل التطبيق")
+                    }
+                } else if (work.source == "Internet Archive" || work.source == "Wikimedia Commons") {
+                    Text("لم نعثر على ملف فيديو مباشر قابل للتشغيل لهذا العنصر. لن نظهر زر تشغيل غير حقيقي.",
+                        color = muted(), fontSize = 11.sp)
                 }
                 if (details?.providers?.isNotEmpty() == true) {
                     Text("منصات متاحة في مصر", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
