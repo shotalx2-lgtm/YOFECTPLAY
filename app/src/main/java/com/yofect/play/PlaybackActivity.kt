@@ -45,7 +45,7 @@ class PlaybackActivity : ComponentActivity() {
                     }
                 }
                 player.addListener(listener)
-                onDispose { player.removeListener(listener) }
+                onDispose { player.removeListener(listener); player.release() }
             }
             Column(Modifier.fillMaxSize().background(Color.Black)) {
                 AndroidView(
