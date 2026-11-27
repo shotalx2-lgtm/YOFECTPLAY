@@ -465,7 +465,7 @@ private fun IntroScreen(onFinish: () -> Unit) {
         "ابحث بالاسم، تصفح التصنيفات، وافتح صفحة التفاصيل والمواسم والحلقات المتاحة.",
         "نعرض بيانات العمل ومصادر المشاهدة المتاحة بوضوح، من غير روابط تشغيل وهمية أو تكرار للنتائج."
     )
-    val symbols = listOf(Icons.Default.Movie, Icons.Default.Explore, Icons.Default.verifiedUser)
+    val symbols = listOf(Icons.Default.Movie, Icons.Default.Explore, Icons.Default.Info)
     Column(
         Modifier.fillMaxSize().background(
             Brush.verticalGradient(listOf(Color(0xFF260D14), ink(), ink()))
@@ -873,7 +873,7 @@ private fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.database, null, tint = Accent)
+                Icon(Icons.Default.Storage, null, tint = Accent)
                 Text("TMDB • بيانات وصور ومواسم", color = primaryText(), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))
             }
             Text(
