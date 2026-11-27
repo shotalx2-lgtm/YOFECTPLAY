@@ -19,6 +19,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,11 +49,28 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-private val Ink = Color(0xFF08090D)
-private val SurfaceDark = Color(0xFF15171D)
-private val SurfaceMid = Color(0xFF20232B)
+private data class UiPalette(
+    val background: Color,
+    val surface: Color,
+    val surfaceRaised: Color,
+    val textMuted: Color,
+    val text: Color
+)
+private val DarkPalette = UiPalette(
+    Color(0xFF08090D), Color(0xFF15171D), Color(0xFF20232B),
+    Color(0xFF9DA2AD), Color.White
+)
+private val LightPalette = UiPalette(
+    Color(0xFFF5F6F8), Color.White, Color(0xFFE9EBEF),
+    Color(0xFF656B76), Color(0xFF17191E)
+)
+private val LocalUiPalette = staticCompositionLocalOf { DarkPalette }
 private val Accent = Color(0xFFE50914)
-private val Muted = Color(0xFF9DA2AD)
+@Composable private fun ink() = LocalUiPalette.current.background
+@Composable private fun surfaceDark() = LocalUiPalette.current.surface
+@Composable private fun surfaceMid() = LocalUiPalette.current.surfaceRaised
+@Composable private fun muted() = LocalUiPalette.current.textMuted
+@Composable private fun primaryText() = LocalUiPalette.current.text
 private const val IMAGE_BASE = "https://image.tmdb.org/t/p/"
 private const val PREFS = "yofect_play_preferences"
 
@@ -221,6 +244,9 @@ private suspend fun loadEpisodes(context: Context, work: Work, season: Season): 
 @Composable
 private fun YofectPlayApp() {
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    var launchStage by remember { mutableStateOf("splash") }
+    var isLightMode by remember { mutableStateOf(prefs.getBoolean("light_mode", false)) }
     var tab by remember { mutableIntStateOf(0) }
     var catalog by remember { mutableStateOf(Catalog()) }
     var loading by remember { mutableStateOf(false) }
@@ -239,19 +265,31 @@ private fun YofectPlayApp() {
         val id = favoriteKey(work)
         if (!next.add(id)) next.remove(id)
         favorites = next
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putStringSet("favorites", next).apply()
+        prefs.edit().putStringSet("favorites", next).apply()
     }
+
     suspend fun refreshCatalog() {
         loading = true
         error = ""
-        catalog = loadCatalog(context)
+        val loaded = runCatching { loadCatalog(context) }
+        catalog = loaded.getOrDefault(Catalog())
         loading = false
-        if (getApiKey(context).isBlank()) error = "أضف مفتاح TMDB من الإعدادات لتشغيل المكتبة."
-        else if (catalog.trending.isEmpty()) error = "لم تصل بيانات. تحقق من مفتاح TMDB واتصال الإنترنت."
+        if (getApiKey(context).isBlank()) {
+            error = "فعّل مكتبة YOFECT PLAY بإضافة مفتاح TMDB من الإعدادات."
+        } else if (loaded.isFailure || catalog.trending.isEmpty()) {
+            error = "تعذر تحميل المكتبة. راجع مفتاح TMDB واتصال الإنترنت ثم حاول مرة أخرى."
+        }
     }
 
-    LaunchedEffect(Unit) { refreshCatalog() }
-    LaunchedEffect(query) {
+    LaunchedEffect(Unit) {
+        delay(1050)
+        launchStage = if (prefs.getBoolean("intro_complete", false)) "app" else "intro"
+    }
+    LaunchedEffect(launchStage) {
+        if (launchStage == "app") refreshCatalog()
+    }
+    LaunchedEffect(query, launchStage) {
+        if (launchStage != "app") return@LaunchedEffect
         if (query.trim().length < 2) {
             searchResults = emptyList()
             searchStarted = false
@@ -262,58 +300,226 @@ private fun YofectPlayApp() {
             searchStarted = true
             val rows = apiWorks(context, "search/multi?query=" + URLEncoder.encode(query.trim(), "UTF-8"))
             searchResults = rows.filter { it.mediaType == "movie" || it.mediaType == "tv" }
+                .distinctBy { favoriteKey(it) }
             searchBusy = false
         }
     }
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Ink, surface = SurfaceDark, onSurface = Color.White)) {
-        Surface(Modifier.fillMaxSize(), color = Ink) {
-            if (selected != null) {
-                DetailScreen(
-                    work = selected!!,
-                    favorite = favorites.contains(favoriteKey(selected!!)),
-                    onBack = { selected = null },
-                    onFavorite = { toggleFavorite(selected!!) }
+    val palette = if (isLightMode) LightPalette else DarkPalette
+    CompositionLocalProvider(
+        LocalUiPalette provides palette,
+        LocalLayoutDirection provides LayoutDirection.Rtl
+    ) {
+        MaterialTheme(
+            colorScheme = if (isLightMode) {
+                lightColorScheme(
+                    primary = Accent, background = palette.background, surface = palette.surface,
+                    onBackground = palette.text, onSurface = palette.text
                 )
             } else {
-                Column(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(1f)) {
-                        when (tab) {
-                            0 -> HomeScreen(catalog, loading, error, { selected = it }, { scope.launch { refreshCatalog() } })
-                            1 -> SearchScreen(query, { query = it }, searchResults, searchBusy, searchStarted) { selected = it }
-                            2 -> LibraryScreen(catalog, favorites) { selected = it }
-                            else -> SettingsScreen(
-                                hasKey = getApiKey(context).isNotBlank(),
-                                input = keyInput,
-                                onInput = { keyInput = it },
-                                onSave = {
-                                    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("tmdb_key", keyInput.trim()).apply()
-                                    keyInput = ""
-                                    scope.launch { refreshCatalog() }
-                                },
-                                onRefresh = { scope.launch { refreshCatalog() } }
-                            )
+                darkColorScheme(
+                    primary = Accent, background = palette.background, surface = palette.surface,
+                    onBackground = palette.text, onSurface = palette.text
+                )
+            }
+        ) {
+            Surface(Modifier.fillMaxSize(), color = ink()) {
+                when (launchStage) {
+                    "splash" -> SplashScreen()
+                    "intro" -> IntroScreen(
+                        onFinish = {
+                            prefs.edit().putBoolean("intro_complete", true).apply()
+                            launchStage = "app"
                         }
-                    }
-                    NavigationBar(containerColor = Color(0xFF101116)) {
-                        val labels = listOf("الرئيسية", "بحث", "قائمتي", "الإعدادات")
-                        val icons = listOf(Icons.Default.Home, Icons.Default.Search, Icons.Default.Favorite, Icons.Default.Settings)
-                        labels.forEachIndexed { index, label ->
-                            NavigationBarItem(
-                                selected = tab == index,
-                                onClick = { tab = index },
-                                icon = { Icon(icons[index], null) },
-                                label = { Text(label, fontSize = 10.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Accent, selectedTextColor = Color.White,
-                                    indicatorColor = Color(0xFF3A171E), unselectedIconColor = Muted, unselectedTextColor = Muted
-                                )
+                    )
+                    else -> {
+                        if (selected != null) {
+                            DetailScreen(
+                                work = selected!!,
+                                favorite = favorites.contains(favoriteKey(selected!!)),
+                                onBack = { selected = null },
+                                onFavorite = { toggleFavorite(selected!!) }
                             )
+                        } else {
+                            Column(Modifier.fillMaxSize()) {
+                                Box(Modifier.weight(1f)) {
+                                    when (tab) {
+                                        0 -> HomeScreen(
+                                            catalog, loading, error,
+                                            { selected = it },
+                                            { scope.launch { refreshCatalog() } }
+                                        )
+                                        1 -> SearchScreen(
+                                            query, { query = it }, searchResults, searchBusy, searchStarted
+                                        ) { selected = it }
+                                        2 -> LibraryScreen(catalog, favorites) { selected = it }
+                                        else -> SettingsScreen(
+                                            hasKey = getApiKey(context).isNotBlank(),
+                                            input = keyInput,
+                                            onInput = { keyInput = it },
+                                            onSave = {
+                                                prefs.edit().putString("tmdb_key", keyInput.trim()).apply()
+                                                keyInput = ""
+                                                scope.launch { refreshCatalog() }
+                                            },
+                                            onRefresh = { scope.launch { refreshCatalog() } },
+                                            isLightMode = isLightMode,
+                                            onThemeChange = { light ->
+                                                isLightMode = light
+                                                prefs.edit().putBoolean("light_mode", light).apply()
+                                            }
+                                        )
+                                    }
+                                }
+                                NavigationBar(
+                                    containerColor = surfaceDark(),
+                                    contentColor = primaryText()
+                                ) {
+                                    val labels = listOf("الرئيسية", "بحث", "قائمتي", "الإعدادات")
+                                    val icons = listOf(
+                                        Icons.Default.Home, Icons.Default.Search,
+                                        Icons.Default.Favorite, Icons.Default.Settings
+                                    )
+                                    labels.forEachIndexed { index, label ->
+                                        NavigationBarItem(
+                                            selected = tab == index,
+                                            onClick = { tab = index },
+                                            icon = { Icon(icons[index], null) },
+                                            label = { Text(label, fontSize = 10.sp) },
+                                            colors = NavigationBarItemDefaults.colors(
+                                                selectedIconColor = Accent,
+                                                selectedTextColor = primaryText(),
+                                                indicatorColor = Color(0x33E50914),
+                                                unselectedIconColor = muted(),
+                                                unselectedTextColor = muted()
+                                            )
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BrandMark(size: Int = 62) {
+    Box(
+        Modifier.size(size.dp).clip(RoundedCornerShape((size / 3).dp))
+            .background(Brush.linearGradient(listOf(Color(0xFFFF3545), Accent, Color(0xFF8D0010)))),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Default.PlayArrow, contentDescription = "YOFECT PLAY",
+            tint = Color.White, modifier = Modifier.size((size * 0.66f).dp)
+        )
+    }
+}
+
+@Composable
+private fun SplashScreen() {
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.radialGradient(
+                listOf(Color(0xFF351019), Color(0xFF130B10), ink()),
+                radius = 900f
+            )
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            BrandMark(88)
+            Spacer(Modifier.height(22.dp))
+            Text(
+                "YOFECT", color = primaryText(), fontSize = 34.sp,
+                fontWeight = FontWeight.Black, letterSpacing = 4.sp
+            )
+            Text(
+                "PLAY", color = Accent, fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold, letterSpacing = 9.sp
+            )
+            Spacer(Modifier.height(34.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(23.dp), color = Accent, strokeWidth = 2.dp
+            )
+            Spacer(Modifier.height(12.dp))
+            Text("عالمك من الأفلام والمسلسلات", color = muted(), fontSize = 12.sp)
+        }
+        Text(
+            "اكتشف حكايتك القادمة",
+            color = muted(), fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)
+        )
+    }
+}
+
+@Composable
+private fun IntroScreen(onFinish: () -> Unit) {
+    var page by remember { mutableIntStateOf(0) }
+    val titles = listOf("كل عالم الترفيه في مكان واحد", "اكتشف ما تحب بسهولة", "مصادر أوضح وتجربة أذكى")
+    val descriptions = listOf(
+        "استكشف الأفلام والمسلسلات العربية والتركية والهندية والعالمية من مكتبة واحدة.",
+        "ابحث بالاسم، تصفح التصنيفات، وافتح صفحة التفاصيل والمواسم والحلقات المتاحة.",
+        "نعرض بيانات العمل ومصادر المشاهدة المتاحة بوضوح، من غير روابط تشغيل وهمية أو تكرار للنتائج."
+    )
+    val symbols = listOf(Icons.Default.Movie, Icons.Default.Explore, Icons.Default.verifiedUser)
+    Column(
+        Modifier.fillMaxSize().background(
+            Brush.verticalGradient(listOf(Color(0xFF260D14), ink(), ink()))
+        ).padding(horizontal = 26.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onFinish) { Text("تخطي", color = muted()) }
+        }
+        Spacer(Modifier.weight(1f))
+        Box(
+            Modifier.size(174.dp).clip(RoundedCornerShape(42.dp))
+                .background(Brush.linearGradient(listOf(Color(0xFF581522), Color(0xFF1C1117)))),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(symbols[page], null, tint = Accent, modifier = Modifier.size(78.dp))
+            BrandMark(44)
+        }
+        Spacer(Modifier.height(38.dp))
+        Text(
+            titles[page], color = primaryText(), fontSize = 24.sp,
+            fontWeight = FontWeight.Black, textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            descriptions[page], color = muted(), fontSize = 14.sp,
+            lineHeight = 23.sp, textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(30.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            repeat(3) { index ->
+                Box(
+                    Modifier.width(if (index == page) 27.dp else 7.dp).height(7.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (index == page) Accent else surfaceMid())
+                )
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Button(
+            onClick = { if (page < 2) page++ else onFinish() },
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Accent)
+        ) {
+            Text(if (page == 2) "ابدأ استخدام YOFECT PLAY" else "التالي", fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Default.ArrowBack, null)
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "مكتبة اكتشاف ومشاهدة حسب المصادر المتاحة",
+            color = muted(), fontSize = 10.sp
+        )
     }
 }
 
@@ -326,8 +532,8 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
         "تركي" -> catalog.turkish
         "هندي" -> catalog.indian
         "أجنبي" -> catalog.international
-        else -> catalog.movies + catalog.shows
-    }
+        else -> catalog.trending + catalog.movies + catalog.shows
+    }.distinctBy { favoriteKey(it) }
     val filtered = when (media) {
         "أفلام" -> source.filter { it.mediaType == "movie" }
         "مسلسلات" -> source.filter { it.mediaType == "tv" }
@@ -380,14 +586,14 @@ private fun HomeScreen(catalog: Catalog, loading: Boolean, error: String, onOpen
             item { NoticeCard("لا توجد نتائج في هذا التصنيف حاليًا. تأكد من إعداد مفتاح TMDB ثم حدّث المكتبة.") }
         }
         item {
-            Text("هذه مكتبة بيانات وصور ومواسم. تشغيل الفيديو يتطلب مصدرًا مرخصًا متاحًا لكل عمل.", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 18.dp))
+            Text("هذه مكتبة بيانات وصور ومواسم. تشغيل الفيديو يتطلب مصدرًا مرخصًا متاحًا لكل عمل.", color = muted(), fontSize = 10.sp, modifier = Modifier.padding(horizontal = 18.dp))
         }
     }
 }
 
 @Composable
 private fun WelcomeBanner() {
-    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(190.dp).clip(RoundedCornerShape(22.dp)).background(Brush.linearGradient(listOf(Color(0xFF5D1322), Color(0xFF21131B), SurfaceDark))), contentAlignment = Alignment.BottomStart) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(190.dp).clip(RoundedCornerShape(22.dp)).background(Brush.linearGradient(listOf(Color(0xFF5D1322), Color(0xFF21131B), surfaceDark()))), contentAlignment = Alignment.BottomStart) {
         Column(Modifier.padding(20.dp)) {
             Text("كل حكاية تبدأ هنا", color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Black)
             Text("أفلام ومسلسلات عربية وعالمية", color = Color.LightGray, fontSize = 13.sp)
@@ -413,7 +619,7 @@ private fun HeroBanner(work: Work, onOpen: (Work) -> Unit) {
 private fun SectionHeader(title: String, subtitle: String? = null) {
     Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 2.dp)) {
         Text(title, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-        if (subtitle != null) Text(subtitle, color = Muted, fontSize = 11.sp)
+        if (subtitle != null) Text(subtitle, color = muted(), fontSize = 11.sp)
     }
 }
 
@@ -431,7 +637,7 @@ private fun PosterSection(title: String, works: List<Work>, onOpen: (Work) -> Un
 private fun PosterCard(work: Work, onOpen: (Work) -> Unit) {
     Column(Modifier.width(124.dp).clickable { onOpen(work) }, verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Box {
-            AsyncImage(work.poster, work.title, Modifier.fillMaxWidth().height(174.dp).clip(RoundedCornerShape(12.dp)).background(SurfaceMid), contentScale = ContentScale.Crop)
+            AsyncImage(work.poster, work.title, Modifier.fillMaxWidth().height(174.dp).clip(RoundedCornerShape(12.dp)).background(surfaceMid()), contentScale = ContentScale.Crop)
             if (work.rating > 0) {
                 Row(Modifier.align(Alignment.BottomStart).padding(6.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xD9000000)).padding(horizontal = 6.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Star, null, tint = Color(0xFFFFC857), modifier = Modifier.size(11.dp))
@@ -440,7 +646,7 @@ private fun PosterCard(work: Work, onOpen: (Work) -> Unit) {
             }
         }
         Text(work.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text((if (work.mediaType == "tv") "مسلسل" else "فيلم") + " • " + work.year, color = Muted, fontSize = 10.sp)
+        Text((if (work.mediaType == "tv") "مسلسل" else "فيلم") + " • " + work.year, color = muted(), fontSize = 10.sp)
     }
 }
 
@@ -457,8 +663,8 @@ private fun SearchScreen(query: String, onQuery: (String) -> Unit, results: List
         )
         when {
             busy -> LoadingBlock()
-            !started -> Text("ابحث في مكتبة الأفلام والمسلسلات.", color = Muted, modifier = Modifier.padding(20.dp))
-            results.isEmpty() -> Text("لا توجد نتائج مطابقة.", color = Muted, modifier = Modifier.padding(20.dp))
+            !started -> Text("ابحث في مكتبة الأفلام والمسلسلات.", color = muted(), modifier = Modifier.padding(20.dp))
+            results.isEmpty() -> Text("لا توجد نتائج مطابقة.", color = muted(), modifier = Modifier.padding(20.dp))
             else -> LazyColumn(contentPadding = PaddingValues(vertical = 10.dp)) {
                 items(results.distinctBy { favoriteKey(it) }) { WorkListRow(it, onOpen) }
             }
@@ -469,10 +675,10 @@ private fun SearchScreen(query: String, onQuery: (String) -> Unit, results: List
 @Composable
 private fun WorkListRow(work: Work, onOpen: (Work) -> Unit) {
     Row(Modifier.fillMaxWidth().clickable { onOpen(work) }.padding(horizontal = 16.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-        AsyncImage(work.poster, work.title, Modifier.size(88.dp, 118.dp).clip(RoundedCornerShape(10.dp)).background(SurfaceMid), contentScale = ContentScale.Crop)
+        AsyncImage(work.poster, work.title, Modifier.size(88.dp, 118.dp).clip(RoundedCornerShape(10.dp)).background(surfaceMid()), contentScale = ContentScale.Crop)
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(work.title, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text((if (work.mediaType == "tv") "مسلسل" else "فيلم") + " • " + work.year + " • " + work.language, color = Muted, fontSize = 10.sp)
+            Text((if (work.mediaType == "tv") "مسلسل" else "فيلم") + " • " + work.year + " • " + work.language, color = muted(), fontSize = 10.sp)
             Text(work.overview.ifBlank { "لا يوجد ملخص متاح." }, color = Color.LightGray, fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Text("عرض التفاصيل", color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         }
@@ -489,7 +695,7 @@ private fun LibraryScreen(catalog: Catalog, favorites: Set<String>, onOpen: (Wor
             Column(Modifier.fillMaxSize().padding(30.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Icon(Icons.Default.FavoriteBorder, null, tint = Accent, modifier = Modifier.size(52.dp))
                 Text("قائمتك فاضية", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-                Text("افتح أي عمل واضغط القلب لإضافته لقائمتك.", color = Muted, fontSize = 12.sp)
+                Text("افتح أي عمل واضغط القلب لإضافته لقائمتك.", color = muted(), fontSize = 12.sp)
             }
         } else {
             LazyColumn { items(saved) { WorkListRow(it, onOpen) } }
@@ -521,7 +727,7 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
         item {
             Box(Modifier.fillMaxWidth().height(285.dp)) {
                 AsyncImage(work.backdrop ?: work.poster, work.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x22000000), Ink))))
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x22000000), ink()))))
                 IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
                 IconButton(onClick = onFavorite, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
                     Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, tint = if (favorite) Accent else Color.White)
@@ -537,20 +743,20 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(details?.overview ?: work.overview.ifBlank { "لا يتوفر ملخص لهذا العمل." }, color = Color.LightGray, fontSize = 13.sp, lineHeight = 21.sp)
                 if (details != null) {
-                    Text("النوع: " + details!!.genres.joinToString(" • ").ifBlank { "غير محدد" }, color = Muted, fontSize = 11.sp)
-                    Text("المدة: " + details!!.runtime, color = Muted, fontSize = 11.sp)
+                    Text("النوع: " + details!!.genres.joinToString(" • ").ifBlank { "غير محدد" }, color = muted(), fontSize = 11.sp)
+                    Text("المدة: " + details!!.runtime, color = muted(), fontSize = 11.sp)
                 }
                 if (details?.providers?.isNotEmpty() == true) {
                     Text("منصات متاحة في مصر", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     details!!.providers.forEach { provider ->
                         Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(SurfaceDark)
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(surfaceDark())
                                 .clickable { openProvider(context, provider.link, work.title) }.padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             AsyncImage(provider.logo, provider.name, Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
                             Text(provider.name, color = Color.White, modifier = Modifier.weight(1f).padding(start = 10.dp), fontWeight = FontWeight.SemiBold)
-                            Icon(Icons.Default.OpenInNew, null, tint = Muted)
+                            Icon(Icons.Default.OpenInNew, null, tint = muted())
                         }
                     }
                     Button(onClick = { openProvider(context, details!!.providerLink, work.title) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent), shape = RoundedCornerShape(12.dp)) {
@@ -562,9 +768,9 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
                         Spacer(Modifier.width(8.dp))
                         Text("ابحث عن منصة مشاهدة رسمية")
                     }
-                    Text("لم تتوفر بيانات منصات المشاهدة لهذا العمل في مصر. البحث الخارجي قد يعرض خيارات أخرى.", color = Muted, fontSize = 10.sp)
+                    Text("لم تتوفر بيانات منصات المشاهدة لهذا العمل في مصر. البحث الخارجي قد يعرض خيارات أخرى.", color = muted(), fontSize = 10.sp)
                 }
-                Text("YOFECT PLAY لا يضيف بثًا غير مرخص. التشغيل والجودة داخل التطبيق يتطلبان تكاملًا مع مزود يملك حقوق العرض.", color = Muted, fontSize = 10.sp)
+                Text("YOFECT PLAY لا يضيف بثًا غير مرخص. التشغيل والجودة داخل التطبيق يتطلبان تكاملًا مع مزود يملك حقوق العرض.", color = muted(), fontSize = 10.sp)
             }
         }
         if (work.mediaType == "tv") {
@@ -572,10 +778,10 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
             if (loading) item { LoadingBlock() }
             if (!loading && details?.seasons.isNullOrEmpty()) item { NoticeCard("لم تتوفر معلومات المواسم لهذا المسلسل في قاعدة البيانات.") }
             items(details?.seasons.orEmpty()) { season ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(RoundedCornerShape(12.dp)).background(SurfaceDark).clickable { selectedSeason = season }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(RoundedCornerShape(12.dp)).background(surfaceDark()).clickable { selectedSeason = season }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(season.name, color = Color.White, fontWeight = FontWeight.Bold)
-                        Text(season.episodes.toString() + " حلقة", color = Muted, fontSize = 11.sp)
+                        Text(season.episodes.toString() + " حلقة", color = muted(), fontSize = 11.sp)
                     }
                     Icon(Icons.Default.ChevronLeft, null, tint = Accent)
                 }
@@ -585,11 +791,11 @@ private fun DetailScreen(work: Work, favorite: Boolean, onBack: () -> Unit, onFa
                 if (episodesLoading) item { LoadingBlock() }
                 if (!episodesLoading && episodes.isEmpty()) item { NoticeCard("لا توجد بيانات حلقات متاحة لهذا الموسم.") }
                 items(episodes) { episode ->
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).background(SurfaceDark, RoundedCornerShape(12.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).background(surfaceDark(), RoundedCornerShape(12.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         AsyncImage(episode.still ?: work.poster, episode.name, Modifier.size(104.dp, 66.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
                         Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text("الحلقة " + episode.number + ": " + episode.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                            Text(episode.overview.ifBlank { "لا يتوفر وصف للحلقة." }, color = Muted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(episode.overview.ifBlank { "لا يتوفر وصف للحلقة." }, color = muted(), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -607,28 +813,145 @@ private fun openWhereToWatch(context: Context, title: String) {
 }
 
 @Composable
-private fun SettingsScreen(hasKey: Boolean, input: String, onInput: (String) -> Unit, onSave: () -> Unit, onRefresh: () -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("الإعدادات", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Movie, null, tint = Accent, modifier = Modifier.size(34.dp))
-            Column(Modifier.padding(start = 12.dp)) {
-                Text("YOFECT PLAY", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text("مكتبتك للأفلام والمسلسلات", color = Muted, fontSize = 11.sp)
+private fun SettingsScreen(
+    hasKey: Boolean,
+    input: String,
+    onInput: (String) -> Unit,
+    onSave: () -> Unit,
+    onRefresh: () -> Unit,
+    isLightMode: Boolean,
+    onThemeChange: (Boolean) -> Unit
+) {
+    var revealKey by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(15.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("الإعدادات", color = primaryText(), fontSize = 27.sp, fontWeight = FontWeight.Black)
+            Text("خصص تجربتك وتابع حالة مصادر المكتبة", color = muted(), fontSize = 12.sp)
+        }
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                .background(surfaceDark()).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BrandMark(54)
+            Column(Modifier.weight(1f).padding(start = 13.dp)) {
+                Text("YOFECT PLAY", color = primaryText(), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                Text("ترفيهك… بطريقتك", color = muted(), fontSize = 11.sp)
+            }
+            Surface(color = if (hasKey) Color(0xFF123C2D) else Color(0xFF493318), shape = RoundedCornerShape(20.dp)) {
+                Text(
+                    if (hasKey) "المكتبة مفعّلة" else "تحتاج إعدادًا",
+                    color = if (hasKey) Color(0xFF8AE0B2) else Color(0xFFFFD18A),
+                    fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
+                )
             }
         }
-        Divider(color = SurfaceMid)
-        Text("تفعيل مكتبة الأعمال", color = Color.White, fontWeight = FontWeight.Bold)
-        Text("يلزم مفتاح TMDB لعرض بيانات الأفلام والمسلسلات والبوسترات والمواسم. أنشئ مفتاح API من موقع TMDB وأدخله هنا. يُحفظ المفتاح على جهازك.", color = Muted, fontSize = 12.sp, lineHeight = 19.sp)
-        OutlinedTextField(value = input, onValueChange = onInput, modifier = Modifier.fillMaxWidth(), label = { Text("TMDB API Key") }, placeholder = { Text("أدخل مفتاح API") }, singleLine = true)
-        Button(onClick = onSave, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("حفظ المفتاح") }
-        Text(if (hasKey) "تم العثور على مفتاح محفوظ أو مضبوط للبناء." else "المفتاح غير مضبوط بعد.", color = if (hasKey) Color(0xFF74D49A) else Color(0xFFFFC857), fontSize = 11.sp)
-        OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+
+        Text("المظهر", color = primaryText(), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .background(surfaceDark()).clickable { onThemeChange(!isLightMode) }.padding(15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(if (isLightMode) Icons.Default.LightMode else Icons.Default.DarkMode, null, tint = Accent)
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Text("الوضع الفاتح", color = primaryText(), fontWeight = FontWeight.SemiBold)
+                Text(if (isLightMode) "الخلفية الفاتحة مفعّلة" else "المظهر الداكن مفعّل", color = muted(), fontSize = 10.sp)
+            }
+            Switch(checked = isLightMode, onCheckedChange = onThemeChange)
+        }
+
+        Text("مصادر المكتبة", color = primaryText(), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .background(surfaceDark()).padding(15.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.database, null, tint = Accent)
+                Text("TMDB • بيانات وصور ومواسم", color = primaryText(), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))
+            }
+            Text(
+                "أدخل مفتاح API لتشغيل الكتالوج والبحث والتفاصيل. المفتاح يُحفظ محليًا على هذا الجهاز.",
+                color = muted(), fontSize = 11.sp, lineHeight = 18.sp
+            )
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInput,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("TMDB API Key") },
+                placeholder = { Text("الصق مفتاح API هنا") },
+                singleLine = true,
+                shape = RoundedCornerShape(13.dp),
+                visualTransformation = if (revealKey) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { revealKey = !revealKey }) {
+                        Icon(if (revealKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, "إظهار المفتاح")
+                    }
+                }
+            )
+            Button(
+                onClick = onSave,
+                enabled = input.trim().isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(13.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+            ) {
+                Icon(Icons.Default.VpnKey, null)
+                Spacer(Modifier.width(8.dp))
+                Text("حفظ المفتاح وتحديث المكتبة")
+            }
+            Text(
+                if (hasKey) "يوجد مفتاح محفوظ أو مضاف وقت البناء." else "لم يتم إعداد مفتاح TMDB بعد.",
+                color = if (hasKey) Color(0xFF58C98C) else Color(0xFFFFC857),
+                fontSize = 10.sp
+            )
+        }
+
+        OutlinedButton(
+            onClick = onRefresh,
+            modifier = Modifier.fillMaxWidth().height(49.dp),
+            shape = RoundedCornerShape(13.dp)
+        ) {
             Icon(Icons.Default.Refresh, null)
             Spacer(Modifier.width(8.dp))
-            Text("تحديث المكتبة")
+            Text("تحديث بيانات المكتبة")
         }
-        Text("TMDB يوفر البيانات والصور، ولا يوفر ملفات تشغيل الأفلام أو حقوق بث الحلقات. روابط المشاهدة توجه إلى المنصات الرسمية. This product uses the TMDB API but is not endorsed or certified by TMDB.", color = Muted, fontSize = 10.sp, lineHeight = 16.sp)
+
+        Text("عن التطبيق", color = primaryText(), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .background(surfaceDark()).clickable { showAbout = true }.padding(15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Info, null, tint = Accent)
+            Text("عن YOFECT PLAY وسياسة مصادر المشاهدة", color = primaryText(), modifier = Modifier.weight(1f).padding(horizontal = 10.dp), fontSize = 12.sp)
+            Icon(Icons.Default.ChevronLeft, null, tint = muted())
+        }
+        Text(
+            "TMDB يوفّر البيانات والصور، وليس ملفات الأفلام أو حقوق بث الحلقات. روابط المشاهدة تُعرض وفق ما توفره المصادر الرسمية. This product uses the TMDB API but is not endorsed or certified by TMDB.",
+            color = muted(), fontSize = 10.sp, lineHeight = 16.sp
+        )
+    }
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            confirmButton = { TextButton(onClick = { showAbout = false }) { Text("حسنًا") } },
+            title = { Text("YOFECT PLAY") },
+            text = {
+                Text(
+                    "منصة لاكتشاف الأفلام والمسلسلات وتجميع بياناتها من مصادر متعددة. يظهر كل عمل مرة واحدة، مع توضيح مصدر البيانات وطريقة الوصول للمشاهدة. لا يتم تشغيل محتوى محمي داخل التطبيق إلا عند توفر تكامل مرخص يسمح بذلك."
+                )
+            },
+            containerColor = surfaceDark(),
+            titleContentColor = primaryText(),
+            textContentColor = muted()
+        )
     }
 }
 
